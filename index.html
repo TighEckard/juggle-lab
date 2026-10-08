@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Juggle Lab</title>
+<style>
+  :root {
+    --accent: #ff9500;
+    --bg: #000;
+    --text: #fff;
+    --muted: rgba(255,255,255,.65);
+    --panel: rgba(28,28,30,.92);
+    --chip: rgba(255,255,255,.14);
+    --good: #34c759;
+    --bad: #ff3b30;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .mirror { transform: scaleX(-1); }
+  .top { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 12px; right: 12px;
+    display: flex; gap: 8px; align-items: center; justify-content: space-between; pointer-events: none; }
+  .top > * { pointer-events: auto; }
+  .chip { background: var(--chip); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border-radius: 999px; padding: 8px 12px; font-weight: 600; font-size: 13px; white-space: nowrap;
+    font-variant-numeric: tabular-nums; }
+  .btn { border: 0; color: var(--text); background: var(--chip); backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px); border-radius: 999px; min-width: 44px; height: 44px;
+    padding: 0 14px; font: 600 15px -apple-system, system-ui, sans-serif; }
+  #count { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 54px); left: 0; right: 0;
+    text-align: center; font: 800 120px/1 -apple-system, "SF Pro Rounded", system-ui, sans-serif;
+    text-shadow: 0 4px 24px rgba(0,0,0,.6); font-variant-numeric: tabular-nums; pointer-events: none; }
+  #event { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 190px); left: 0; right: 0;
+    text-align: center; font-weight: 700; font-size: 20px; color: var(--accent); min-height: 26px;
+    text-shadow: 0 2px 10px rgba(0,0,0,.7); pointer-events: none; }
+  #status { position: fixed; left: 12px; bottom: calc(max(12px, env(safe-area-inset-bottom)) + 64px);
+    background: rgba(0,0,0,.55); border-radius: 12px; padding: 8px 10px; font: 600 12px/1.45 ui-monospace,
+    SFMono-Regular, Menlo, monospace; white-space: pre; pointer-events: none; }
+  .bottom { position: fixed; left: 12px; right: 12px; bottom: max(12px, env(safe-area-inset-bottom));
+    display: flex; gap: 8px; justify-content: center; }
+  .bottom .btn { flex: 1; max-width: 180px; }
+  .primary { background: var(--accent) !important; color: #000 !important; }
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; max-height: 70vh; overflow-y: auto;
+    background: var(--panel); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+    border-radius: 20px 20px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+    transform: translateY(105%); transition: transform .25s ease; }
+  #sheet.open { transform: none; }
+  #sheet h2 { margin: 0 0 12px; font-size: 20px; display: flex; justify-content: space-between; align-items: center; }
+  .row { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; margin: 14px 0; }
+  .row label { font-weight: 600; }
+  .row output { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+  .row small { grid-column: 1 / -1; color: var(--muted); }
+  select { font: inherit; color: var(--text); background: var(--chip); border: 0; border-radius: 10px; padding: 8px 10px; }
+  .toggle { display: flex; justify-content: space-between; align-items: center; margin: 14px 0; font-weight: 600; }
+  .toggle input { width: 22px; height: 22px; accent-color: var(--accent); }
+  #start { position: fixed; inset: 0; display: grid; place-content: center; text-align: center; padding: 24px; gap: 14px; }
+  #start h1 { margin: 0; font-size: 34px; }
+  #start p { margin: 0; color: var(--muted); max-width: 320px; }
+  #start .btn { height: 52px; font-size: 17px; padding: 0 28px; justify-self: center; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div id="start">
+  <h1>Juggle Lab</h1>
+  <p>Prop your phone up, step back so your legs and the ball are in view, and juggle.</p>
+  <button class="btn primary" id="go">Start Camera</button>
+  <p id="loading" class="hidden">Loading models…</p>
+</div>
+
+<div class="top hidden" id="topbar">
+  <button class="btn" id="flip" aria-label="Switch camera">⟲</button>
+  <span class="chip" id="ballchip">Ball —</span>
+  <button class="btn" id="settings" aria-label="Settings">⚙︎</button>
+</div>
+<div id="count" class="hidden">0</div>
+<div id="event"></div>
+<div id="status" class="hidden"></div>
+<div class="bottom hidden" id="bottombar">
+  <button class="btn" id="reset">Reset</button>
+  <button class="btn" id="debug">Debug</button>
+</div>
+
+<div id="sheet" role="dialog" aria-label="Settings">
+  <h2>Settings <button class="btn" id="close">Done</button></h2>
+  <div class="row"><label for="detector">Ball detector</label>
+    <select id="detector">
+      <option value="efficientdet_lite0">EfficientDet-Lite0 (fast)</option>
+      <option value="efficientdet_lite2">EfficientDet-Lite2 (accurate)</option>
+    </select>
+  </div>
+  <div class="row"><label for="minScore">Min ball confidence</label><output id="minScoreOut"></output>
+    <input type="range" id="minScore" min="0.05" max="0.6" step="0.01">
+    <small>Lower finds more balls but more mistakes.</small></div>
+  <div class="row"><label for="contact">Touch distance</label><output id="contactOut"></output>
+    <input type="range" id="contact" min="0.4" max="3" step="0.1">
+    <small>How close (in ball sizes) the ball must get to a foot, knee or head.</small></div>
+  <div class="row"><label for="cooldown">Cooldown</label><output id="cooldownOut"></output>
+    <input type="range" id="cooldown" min="80" max="600" step="10">
+    <small>Minimum time between two touches.</small></div>
+  <div class="row"><label for="groundTol">Ground tolerance</label><output id="groundTolOut"></output>
+    <input type="range" id="groundTol" min="0" max="1.5" step="0.05">
+    <small>How close (in ball sizes) to the ground line counts as hitting the ground.</small></div>
+  <div class="toggle"><span>Hands end the run</span><input type="checkbox" id="handsFoul"></div>
+  <div class="toggle"><span>Count knees and head</span><input type="checkbox" id="upperBody"></div>
+  <div class="toggle"><span>Show all detections</span><input type="checkbox" id="showAll"></div>
+</div>
+
+<script type="module">
+import { FilesetResolver, ObjectDetector, PoseLandmarker }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const $ = (id) => document.getElementById(id);
+const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+
+// ---------- Settings (remembered on this phone) ----------
+const defaults = { detector: "efficientdet_lite0", minScore: 0.2, contact: 1.4, cooldown: 180,
+  groundTol: 0.35, handsFoul: true, upperBody: true, showAll: false, facing: "environment", debug: true };
+let S = { ...defaults };
+try { Object.assign(S, JSON.parse(localStorage.getItem("juggleLab") || "{}")); } catch {}
+const save = () => { try { localStorage.setItem("juggleLab", JSON.stringify(S)); } catch {} };
+const fmt = { minScore: (v) => Math.round(v * 100) + "%", contact: (v) => v.toFixed(1) + "×",
+  cooldown: (v) => v + " ms", groundTol: (v) => v.toFixed(2) + "×" };
+for (const key of ["minScore", "contact", "cooldown", "groundTol"]) {
+  const input = $(key), out = $(key + "Out");
+  input.value = S[key]; out.textContent = fmt[key](S[key]);
+  input.addEventListener("input", () => { S[key] = +input.value; out.textContent = fmt[key](S[key]); save(); });
+}
+for (const key of ["handsFoul", "upperBody", "showAll"]) {
+  $(key).checked = S[key];
+  $(key).addEventListener("change", () => { S[key] = $(key).checked; save(); });
+}
+$("detector").value = S.detector;
+$("detector").addEventListener("change", async () => { S.detector = $("detector").value; save(); await loadDetector(); });
+
+// ---------- Models ----------
+let vision, detector, pose;
+async function loadDetector() {
+  detector?.close?.();
+  const opts = (delegate) => ({
+    baseOptions: { modelAssetPath:
+      `https://storage.googleapis.com/mediapipe-models/object_detector/${S.detector}/float16/1/${S.detector}.tflite`, delegate },
+    runningMode: "VIDEO", scoreThreshold: 0.05, maxResults: 5, categoryAllowlist: ["sports ball"] });
+  try { detector = await ObjectDetector.createFromOptions(vision, opts("GPU")); }
+  catch { detector = await ObjectDetector.createFromOptions(vision, opts("CPU")); }
+}
+async function loadModels() {
+  vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  const poseOpts = (delegate) => ({
+    baseOptions: { modelAssetPath:
+      "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", delegate },
+    runningMode: "VIDEO", numPoses: 2 });
+  try { pose = await PoseLandmarker.createFromOptions(vision, poseOpts("GPU")); }
+  catch { pose = await PoseLandmarker.createFromOptions(vision, poseOpts("CPU")); }
+  await loadDetector();
+}
+
+// ---------- Camera ----------
+let stream;
+// Test mode: ?src=clip.mp4 plays a video file instead of the camera.
+const testSource = new URLSearchParams(location.search).get("src");
+async function startCamera() {
+  if (testSource) {
+    video.src = testSource; video.loop = true; video.muted = true;
+    await new Promise((r) => video.addEventListener("loadeddata", r, { once: true }));
+    if (!new URLSearchParams(location.search).has("eval")) await video.play();
+    return;
+  }
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
+    facingMode: S.facing, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } } });
+  video.srcObject = stream;
+  await video.play();
+  const mirror = S.facing === "user";
+  video.classList.toggle("mirror", mirror);
+  canvas.classList.toggle("mirror", mirror);
+}
+
+// ---------- Tracking + judge ----------
+// Positions in video pixels. One ball: the detection nearest the last one.
+const FOOT = [29, 30, 31, 32, 27, 28];   // heels, foot tips, ankles
+const KNEE = [25, 26], HEAD = [0], WRIST = [15, 16, 17, 18, 19, 20];
+let ball = null, trail = [], lastSeen = 0, detHistory = [];
+let count = 0, lastTouch = 0, phase = "ready", groundY = null, groundFrames = 0, eventText = "", eventTime = 0;
+let fpsTimes = [];
+
+function pickBall(dets, now) {
+  const minScore = S.minScore;
+  const cands = dets.filter((d) => d.categories[0].score >= minScore).map((d) => {
+    const b = d.boundingBox;
+    return { x: b.originX + b.width / 2, y: b.originY + b.height / 2, d: (b.width + b.height) / 2,
+             score: d.categories[0].score, box: b };
+  });
+  if (!cands.length) return null;
+  if (ball && now - lastSeen < 500) {
+    cands.sort((a, b) => Math.hypot(a.x - ball.x, a.y - ball.y) - Math.hypot(b.x - ball.x, b.y - ball.y));
+    if (Math.hypot(cands[0].x - ball.x, cands[0].y - ball.y) < ball.d * 6) return cands[0];
+  }
+  return cands.sort((a, b) => b.score - a.score)[0];
+}
+
+// The ball's latest low point: within the last ~0.6 s it fell at least `drop`
+// to its lowest point and has since risen at least `drop`. Image y grows downward.
+function findTurn(now) {
+  const recent = trail.filter((p) => now - p.t < 600 && p.t > lastTouch);
+  if (recent.length < 3) return null;
+  let low = 0;
+  for (let i = 1; i < recent.length; i++) if (recent[i].y > recent[low].y) low = i;
+  if (low === 0 || low === recent.length - 1) return null;
+  const drop = ball.d * 0.2;
+  const fell = recent[low].y - Math.min(...recent.slice(0, low).map((p) => p.y));
+  const rose = recent[low].y - Math.min(...recent.slice(low + 1).map((p) => p.y));
+  return fell >= drop && rose >= drop ? recent[low] : null;
+}
+
+function say(text) { eventText = text; eventTime = performance.now(); }
+
+function judge(now, people) {
+  const p = people[0];
+  const W = video.videoWidth, H = video.videoHeight;
+  const pt = (i) => p && p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null;
+
+  // Ground line: the lowest foot point while standing, smoothed.
+  if (p) {
+    const feet = FOOT.map(pt).filter(Boolean);
+    if (feet.length) {
+      const lowest = Math.max(...feet.map((f) => f.y));
+      if (phase !== "live") groundY = groundY == null ? lowest : groundY * 0.9 + lowest * 0.1;
+    }
+  }
+  if (!ball || now - lastSeen > 120) return;
+
+  // Touch: the ball fell, bottomed out, and is going back up, and its lowest
+  // point was within reach of a foot (or knee/head). Hovering near a foot
+  // doesn't count, and a touch hidden behind the foot still shows as a turn.
+  const turn = findTurn(now);
+  if (turn && p && turn.t - lastTouch > S.cooldown) {
+    const reach = ball.d * S.contact;
+    const parts = [...FOOT, ...(S.upperBody ? [...KNEE, ...HEAD] : [])];
+    const dist = (list) => Math.min(Infinity, ...list.map(pt).filter(Boolean).map((q) => Math.hypot(q.x - turn.x, q.y - turn.y)));
+    const body = dist(parts), hand = dist(WRIST);
+    lastTouch = turn.t;
+    if (hand < reach * 0.8 && hand < body && S.handsFoul && phase === "live") { end("Hand!"); return; }
+    if (body < reach) {
+      if (phase !== "live") { phase = "live"; count = 0; }
+      count += 1;
+      $("count").textContent = count;
+      navigator.vibrate?.(15);
+      say("Touch");
+      return;
+    }
+  }
+
+  // Ground: the ball sits at the ground line (not right after a touch).
+  if (phase === "live" && groundY != null) {
+    const bottom = ball.y + ball.d / 2;
+    const atGround = bottom > groundY - ball.d * S.groundTol;
+    groundFrames = atGround && now - lastTouch > 250 ? groundFrames + 1 : 0;
+    if (groundFrames >= 3) end("Ground!");
+  }
+}
+
+function end(reason) {
+  phase = "ended";
+  say(`${reason}  ·  ${count}`);
+  setTimeout(() => { if (phase === "ended") { phase = "ready"; } }, 1500);
+}
+
+function reset() { count = 0; phase = "ready"; lastTouch = 0; $("count").textContent = "0"; say(""); }
+
+// ---------- Drawing ----------
+function draw(dets, people, now) {
+  const W = video.videoWidth, H = video.videoHeight;
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  ctx.clearRect(0, 0, W, H);
+  const lw = Math.max(2, H / 300);
+
+  if (S.debug && groundY != null) {
+    ctx.setLineDash([12, 10]); ctx.strokeStyle = "rgba(255,255,255,.75)"; ctx.lineWidth = lw;
+    ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(W, groundY); ctx.stroke(); ctx.setLineDash([]);
+  }
+  if (S.debug && S.showAll) {
+    for (const d of dets) {
+      const b = d.boundingBox;
+      ctx.strokeStyle = "rgba(255,255,0,.8)"; ctx.lineWidth = lw;
+      ctx.strokeRect(b.originX, b.originY, b.width, b.height);
+    }
+  }
+  if (S.debug) {
+    for (const p of people) {
+      for (const [i, lm] of p.entries()) {
+        if (lm.visibility < 0.4) continue;
+        const isFoot = FOOT.includes(i), isHand = WRIST.includes(i);
+        if (!isFoot && !isHand && ![0, 11, 12, 23, 24, 25, 26].includes(i)) continue;
+        ctx.fillStyle = isFoot ? "#5ac8fa" : isHand ? "#ff3b30" : "#fff";
+        ctx.beginPath(); ctx.arc(lm.x * W, lm.y * H, lw * 2.5, 0, Math.PI * 2); ctx.fill();
+        if (isFoot && ball) {
+          ctx.strokeStyle = "rgba(90,200,250,.35)"; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.arc(lm.x * W, lm.y * H, ball.d * S.contact, 0, Math.PI * 2); ctx.stroke();
+        }
+      }
+    }
+  }
+  // Trail and ball.
+  ctx.lineCap = "round";
+  for (let i = 1; i < trail.length; i++) {
+    ctx.strokeStyle = `rgba(255,149,0,${i / trail.length * .8})`; ctx.lineWidth = lw * (1 + 2 * i / trail.length);
+    ctx.beginPath(); ctx.moveTo(trail[i - 1].x, trail[i - 1].y); ctx.lineTo(trail[i].x, trail[i].y); ctx.stroke();
+  }
+  if (ball && now - lastSeen < 300) {
+    ctx.strokeStyle = "#ff9500"; ctx.lineWidth = lw * 2;
+    ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.d * 0.6, 0, Math.PI * 2); ctx.stroke();
+    if (S.debug) {
+      ctx.save(); ctx.translate(ball.x, ball.y - ball.d * 0.8);
+      if (S.facing === "user") ctx.scale(-1, 1);
+      ctx.fillStyle = "#ff9500"; ctx.font = `700 ${Math.round(H / 40)}px -apple-system, system-ui`;
+      ctx.textAlign = "center"; ctx.fillText(Math.round(ball.score * 100) + "%", 0, 0); ctx.restore();
+    }
+  }
+}
+
+// ---------- Loop ----------
+let lastVideoTime = -1;
+function loop() {
+  const now = performance.now();
+  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    const dets = detector.detectForVideo(video, now).detections;
+    const people = pose.detectForVideo(video, now).landmarks || [];
+    const found = pickBall(dets, now);
+    if (found) {
+      ball = found; lastSeen = now;
+      trail.push({ x: found.x, y: found.y, t: now });
+      if (trail.length > 20) trail.shift();
+    } else if (now - lastSeen > 300) {
+      trail = [];
+    }
+    detHistory.push(found ? 1 : 0); if (detHistory.length > 60) detHistory.shift();
+    judge(now, people);
+    draw(dets, people, now);
+
+    fpsTimes.push(now); while (fpsTimes.length && now - fpsTimes[0] > 1000) fpsTimes.shift();
+    const rate = detHistory.reduce((a, b) => a + b, 0) / detHistory.length;
+    $("ballchip").textContent = found ? `Ball ${Math.round(found.score * 100)}%` : "Looking for ball";
+    $("ballchip").style.color = found ? "var(--accent)" : "var(--text)";
+    if (S.debug) {
+      $("status").textContent =
+        `${fpsTimes.length} fps · ${S.detector.replace("efficientdet_", "")}\n` +
+        `ball seen ${Math.round(rate * 100)}% of frames\n` +
+        `people ${people.length} · ${phase}`;
+    }
+    $("event").textContent = now - eventTime < 1500 ? eventText : "";
+  }
+  requestAnimationFrame(loop);
+}
+
+// Test mode ?src=clip.mp4&eval=1: steps through the clip at 15 fps (works in a
+// hidden tab) and leaves the results in window.evalResult.
+async function evaluate() {
+  const step = 1 / 15;
+  let frames = 0, seen = 0, scores = [];
+  for (let t = 0; t < video.duration; t += step) {
+    video.currentTime = t;
+    await new Promise((r) => video.addEventListener("seeked", r, { once: true }));
+    const now = t * 1000 + 1;
+    const dets = detector.detectForVideo(video, now).detections;
+    const people = pose.detectForVideo(video, now).landmarks || [];
+    const found = pickBall(dets, now);
+    if (found) { ball = found; lastSeen = now; trail.push({ x: found.x, y: found.y, t: now }); if (trail.length > 20) trail.shift(); seen++; scores.push(found.score); }
+    judge(now, people);
+    frames++;
+  }
+  window.evalResult = { detector: S.detector, frames, ballFrames: seen, ballRate: +(seen / frames).toFixed(3),
+    medianScore: scores.sort()[Math.floor(scores.length / 2)] ?? null, touches: count };
+}
+
+// ---------- UI ----------
+$("go").addEventListener("click", async () => {
+  $("go").disabled = true; $("loading").classList.remove("hidden");
+  try {
+    await Promise.all([loadModels(), startCamera()]);
+  } catch (e) {
+    $("loading").textContent = "Couldn't start: " + (e.message || e);
+    $("go").disabled = false;
+    return;
+  }
+  $("start").classList.add("hidden");
+  for (const id of ["topbar", "count", "bottombar"]) $(id).classList.remove("hidden");
+  $("status").classList.toggle("hidden", !S.debug);
+  if (testSource && new URLSearchParams(location.search).has("eval")) { await evaluate(); return; }
+  requestAnimationFrame(loop);
+});
+$("flip").addEventListener("click", async () => { S.facing = S.facing === "user" ? "environment" : "user"; save(); await startCamera(); });
+$("reset").addEventListener("click", reset);
+$("debug").addEventListener("click", () => { S.debug = !S.debug; save(); $("status").classList.toggle("hidden", !S.debug); });
+$("settings").addEventListener("click", () => $("sheet").classList.add("open"));
+$("close").addEventListener("click", () => $("sheet").classList.remove("open"));
+</script>
+</body>
+</html>
