@@ -100,7 +100,7 @@
     </select>
   </div>
   <div class="row"><label for="minScore">Min ball confidence</label><output id="minScoreOut"></output>
-    <input type="range" id="minScore" min="0.05" max="0.6" step="0.01">
+    <input type="range" id="minScore" min="0.02" max="0.6" step="0.01">
     <small>Lower finds more balls but more mistakes.</small></div>
   <div class="row"><label for="contact">Touch distance</label><output id="contactOut"></output>
     <input type="range" id="contact" min="0.4" max="3" step="0.1">
@@ -114,6 +114,8 @@
   <div class="toggle"><span>Hands end the run</span><input type="checkbox" id="handsFoul"></div>
   <div class="toggle"><span>Count knees and head</span><input type="checkbox" id="upperBody"></div>
   <div class="toggle"><span>Show all detections</span><input type="checkbox" id="showAll"></div>
+  <div class="row"><button class="btn primary" id="copyReport">Copy Report</button><button class="btn" id="clearReport">Clear</button>
+    <small id="reportNote">Juggle for 30 seconds, then copy and paste the report to Claude.</small></div>
 </div>
 
 <script type="module">
@@ -124,10 +126,14 @@ const $ = (id) => document.getElementById(id);
 const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
 
 // ---------- Settings (remembered on this phone) ----------
-const defaults = { detector: "efficientdet_lite0", minScore: 0.2, contact: 1.4, cooldown: 180,
+const defaults = { v: 2, detector: "efficientdet_lite0", minScore: 0.1, contact: 1.4, cooldown: 180,
   groundTol: 0.35, handsFoul: true, upperBody: true, showAll: false, facing: "environment", debug: true };
 let S = { ...defaults };
-try { Object.assign(S, JSON.parse(localStorage.getItem("juggleLab") || "{}")); } catch {}
+try {
+  const saved = JSON.parse(localStorage.getItem("juggleLab") || "{}");
+  if ((saved.v ?? 1) < defaults.v) delete saved.minScore;  // new default for clean backgrounds
+  Object.assign(S, saved, { v: defaults.v });
+} catch {}
 const save = () => { try { localStorage.setItem("juggleLab", JSON.stringify(S)); } catch {} };
 const fmt = { minScore: (v) => Math.round(v * 100) + "%", contact: (v) => v.toFixed(1) + "×",
   cooldown: (v) => v + " ms", groundTol: (v) => v.toFixed(2) + "×" };
@@ -150,7 +156,7 @@ async function loadDetector() {
   const opts = (delegate) => ({
     baseOptions: { modelAssetPath:
       `https://storage.googleapis.com/mediapipe-models/object_detector/${S.detector}/float16/1/${S.detector}.tflite`, delegate },
-    runningMode: "VIDEO", scoreThreshold: 0.05, maxResults: 5, categoryAllowlist: ["sports ball"] });
+    runningMode: "VIDEO", scoreThreshold: 0.02, maxResults: 5, categoryAllowlist: ["sports ball"] });
   try { detector = await ObjectDetector.createFromOptions(vision, opts("GPU")); }
   catch { detector = await ObjectDetector.createFromOptions(vision, opts("CPU")); }
 }
@@ -252,14 +258,52 @@ function findCandidates(people, now) {
   return cands;
 }
 
+// One ball. Anything at or above the confidence bar counts. Once the ball is
+// locked, much fainter detections still count if they're right where the
+// ball should be (a plain background makes those reliable).
 function pickBall(cands, now) {
-  cands = cands.filter((c) => c.score >= S.minScore);
-  if (!cands.length) return null;
   if (ball && now - lastSeen < 500) {
-    cands.sort((a, b) => Math.hypot(a.x - ball.x, a.y - ball.y) - Math.hypot(b.x - ball.x, b.y - ball.y));
-    if (Math.hypot(cands[0].x - ball.x, cands[0].y - ball.y) < ball.d * 6) return cands[0];
+    const near = cands
+      .filter((c) => c.score >= Math.min(0.05, S.minScore) && Math.hypot(c.x - ball.x, c.y - ball.y) < ball.d * 4
+        && c.d > ball.d * 0.5 && c.d < ball.d * 2)
+      .sort((a, b) => Math.hypot(a.x - ball.x, a.y - ball.y) - Math.hypot(b.x - ball.x, b.y - ball.y));
+    if (near.length) return near[0];
   }
-  return cands.sort((a, b) => b.score - a.score)[0];
+  const sure = cands.filter((c) => c.score >= S.minScore);
+  return sure.length ? sure.sort((a, b) => b.score - a.score)[0] : null;
+}
+
+// ---------- Report ----------
+// Counts everything per frame so a test can be summed up and pasted back.
+const freshStats = () => ({ since: Date.now(), frames: 0, pose: 0, zoomed: 0, ball: 0, noGuess: 0,
+  best: [0, 0, 0, 0, 0, 0], fps: [], touches: 0, ends: {} });
+let stats = freshStats();
+const BUCKETS = [0.05, 0.1, 0.2, 0.3, 0.5];
+function record(people, cands, found, fps) {
+  stats.frames++;
+  if (people.length) stats.pose++;
+  if (searchBox) stats.zoomed++;
+  if (found) stats.ball++;
+  const best = Math.max(0, ...cands.map((c) => c.score));
+  if (!cands.length) stats.noGuess++;
+  stats.best[BUCKETS.filter((b) => best >= b).length]++;
+  if (fps) stats.fps.push(fps);
+}
+function report() {
+  const pct = (n) => Math.round(100 * n / Math.max(1, stats.frames)) + "%";
+  const fps = stats.fps.length ? Math.round(stats.fps.reduce((a, b) => a + b, 0) / stats.fps.length) : "-";
+  const labels = ["<5%", "5-10%", "10-20%", "20-30%", "30-50%", "50%+"];
+  const os = navigator.userAgent.match(/iPhone OS [0-9_]+|Android [0-9.]+|Mac OS X [0-9_]+|Windows NT [0-9.]+/);
+  return [
+    `Juggle Lab report (${Math.round((Date.now() - stats.since) / 1000)} s, ${stats.frames} frames, ~${fps} fps)`,
+    `device: ${os ? os[0] : "?"}`,
+    `camera: ${S.facing} ${video.videoWidth}x${video.videoHeight} - detector ${S.detector}`,
+    `settings: min ${Math.round(S.minScore * 100)}% - touch ${S.contact}x - cooldown ${S.cooldown} ms - ground ${S.groundTol}x`,
+    `person seen ${pct(stats.pose)} - zoomed ${pct(stats.zoomed)} - ball locked ${pct(stats.ball)}`,
+    `no ball guess at all ${pct(stats.noGuess)}`,
+    `best ball guess per frame: ${labels.map((l, i) => `${l} ${pct(stats.best[i])}`).join(", ")}`,
+    `touches ${stats.touches} - ends ${JSON.stringify(stats.ends)}`,
+  ].join("\n");
 }
 
 // The ball's latest low point: within the last ~0.6 s it fell at least `drop`
@@ -306,7 +350,7 @@ function judge(now, people) {
     if (hand < reach * 0.8 && hand < body && S.handsFoul && phase === "live") { end("Hand!"); return; }
     if (body < reach) {
       if (phase !== "live") { phase = "live"; count = 0; }
-      count += 1; totalTouches += 1;
+      count += 1; totalTouches += 1; stats.touches++;
       $("count").textContent = count;
       navigator.vibrate?.(15);
       touchPulse = { t: now, x: turn.x, y: turn.y };
@@ -332,6 +376,7 @@ function judge(now, people) {
 
 function end(reason) {
   phase = "ended"; ends += 1; groundSince = null;
+  stats.ends[reason] = (stats.ends[reason] || 0) + 1;
   say(`${reason}  ·  ${count}`);
   setTimeout(() => { if (phase === "ended") { phase = "ready"; } }, 1500);
 }
@@ -460,6 +505,7 @@ function loop() {
     const { people, cands, found } = step(now);
     draw(cands, people, now);
     fpsTimes.push(now); while (fpsTimes.length && now - fpsTimes[0] > 1000) fpsTimes.shift();
+    record(people, cands, found, fpsTimes.length);
     const rate = detHistory.reduce((a, b) => a + b, 0) / detHistory.length;
     $("ballchip").textContent = found ? `Ball ${Math.round(found.score * 100)}%` : "Looking for ball";
     $("ballchip").style.color = found ? "var(--accent)" : "var(--text)";
@@ -467,6 +513,7 @@ function loop() {
       $("status").textContent =
         `${fpsTimes.length} fps · ${S.detector.replace("efficientdet_", "")}\n` +
         `ball seen ${Math.round(rate * 100)}% of frames\n` +
+        `best guess ${Math.round(100 * Math.max(0, ...cands.map((c) => c.score)))}%\n` +
         `people ${people.length} · ${phase}${searchBox ? " · zoomed" : ""}`;
     }
     $("event").textContent = now - eventTime < 1500 ? eventText : "";
@@ -509,6 +556,12 @@ $("go").addEventListener("click", async () => {
 $("flip").addEventListener("click", async () => { S.facing = S.facing === "user" ? "environment" : "user"; save(); await startCamera(); });
 $("reset").addEventListener("click", reset);
 $("debug").addEventListener("click", () => { S.debug = !S.debug; save(); $("status").classList.toggle("hidden", !S.debug); });
+$("copyReport").addEventListener("click", async () => {
+  const text = report();
+  try { await navigator.clipboard.writeText(text); $("reportNote").textContent = "Copied. Paste it to Claude."; }
+  catch { $("reportNote").textContent = text; }
+});
+$("clearReport").addEventListener("click", () => { stats = freshStats(); $("reportNote").textContent = "Cleared. Juggle, then copy."; });
 $("settings").addEventListener("click", () => $("sheet").classList.add("open"));
 $("close").addEventListener("click", () => $("sheet").classList.remove("open"));
 </script>
