@@ -191,16 +191,69 @@ async function startCamera() {
 const FOOT = [29, 30, 31, 32, 27, 28];   // heels, foot tips, ankles
 const KNEE = [25, 26], HEAD = [0], WRIST = [15, 16, 17, 18, 19, 20];
 let ball = null, trail = [], lastSeen = 0, detHistory = [];
+let groundSince = null, totalTouches = 0, ends = 0;
 let count = 0, lastTouch = 0, phase = "ready", groundY = null, groundFrames = 0, eventText = "", eventTime = 0;
 let fpsTimes = [];
 
-function pickBall(dets, now) {
-  const minScore = S.minScore;
-  const cands = dets.filter((d) => d.categories[0].score >= minScore).map((d) => {
+// ---------- Ball search ----------
+// The detector sees a small square (320 px for Lite0). Shrinking a whole
+// 1280×720 frame to that leaves a ball at the feet only a few pixels wide, so
+// we mostly look at a zoomed square around the player's legs (and the ball's
+// last spot), and check the whole frame every few frames.
+const crop = document.createElement("canvas");
+const cropCtx = crop.getContext("2d", { willReadFrequently: false });
+let detectorClock = 0, frameIndex = 0, searchBox = null;
+
+function zoomRegion(people, now) {
+  const W = video.videoWidth, H = video.videoHeight, p = people[0];
+  if (!p) return null;
+  const vis = (i) => p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null;
+  const hips = [23, 24].map(vis).filter(Boolean), feet = [27, 28, 29, 30, 31, 32].map(vis).filter(Boolean);
+  if (!feet.length) return null;
+  const footY = Math.max(...feet.map((f) => f.y));
+  const footX = feet.reduce((s, f) => s + f.x, 0) / feet.length;
+  const hipY = hips.length ? hips.reduce((s, h) => s + h.y, 0) / hips.length : footY - H * 0.3;
+  const leg = Math.max(footY - hipY, H * 0.08);
+  // Square from just above the hips to below the feet, centered on the feet
+  // (or between the feet and the ball if it's drifting sideways).
+  const side = Math.min(Math.max(W, H), leg * 2.2);
+  let cx = footX, cy = footY - side * 0.42;
+  if (ball && now - lastSeen < 600) { cx = (cx + ball.x) / 2; cy = Math.min(cy, ball.y); }
+  const x = Math.max(0, Math.min(W - side, cx - side / 2));
+  const y = Math.max(0, Math.min(H - side, cy - side / 2));
+  return { x, y, w: Math.min(side, W), h: Math.min(side, H) };
+}
+
+function detectIn(region) {
+  const W = video.videoWidth, H = video.videoHeight;
+  const size = S.detector === "efficientdet_lite2" ? 448 : 320;
+  let source = video, sx = 0, sy = 0, scale = 1;
+  if (region) {
+    crop.width = size; crop.height = size;
+    cropCtx.drawImage(video, region.x, region.y, region.w, region.h, 0, 0, size, size);
+    source = crop; sx = region.x; sy = region.y; scale = region.w / size;
+  }
+  detectorClock += 1;
+  return detector.detectForVideo(source, detectorClock).detections.map((d) => {
     const b = d.boundingBox;
-    return { x: b.originX + b.width / 2, y: b.originY + b.height / 2, d: (b.width + b.height) / 2,
-             score: d.categories[0].score, box: b };
+    const box = { originX: sx + b.originX * scale, originY: sy + b.originY * scale,
+                  width: b.width * scale, height: b.height * scale };
+    return { x: box.originX + box.width / 2, y: box.originY + box.height / 2,
+             d: (box.width + box.height) / 2, score: d.categories[0].score, box };
   });
+}
+
+function findCandidates(people, now) {
+  frameIndex += 1;
+  searchBox = zoomRegion(people, now);
+  let cands = searchBox ? detectIn(searchBox) : [];
+  // Whole frame every 4th frame, or whenever the zoomed look finds nothing.
+  if (!searchBox || frameIndex % 4 === 0 || !cands.some((c) => c.score >= S.minScore)) cands = cands.concat(detectIn(null));
+  return cands;
+}
+
+function pickBall(cands, now) {
+  cands = cands.filter((c) => c.score >= S.minScore);
   if (!cands.length) return null;
   if (ball && now - lastSeen < 500) {
     cands.sort((a, b) => Math.hypot(a.x - ball.x, a.y - ball.y) - Math.hypot(b.x - ball.x, b.y - ball.y));
@@ -253,25 +306,32 @@ function judge(now, people) {
     if (hand < reach * 0.8 && hand < body && S.handsFoul && phase === "live") { end("Hand!"); return; }
     if (body < reach) {
       if (phase !== "live") { phase = "live"; count = 0; }
-      count += 1;
+      count += 1; totalTouches += 1;
       $("count").textContent = count;
       navigator.vibrate?.(15);
+      touchPulse = { t: now, x: turn.x, y: turn.y };
       say("Touch");
       return;
     }
   }
 
-  // Ground: the ball sits at the ground line (not right after a touch).
+  // Ground: the ball stays at the ground line, rolling or resting, for a
+  // quarter second. (A low touch also dips to the ground line, but it's
+  // moving fast and leaves right away.)
   if (phase === "live" && groundY != null) {
     const bottom = ball.y + ball.d / 2;
     const atGround = bottom > groundY - ball.d * S.groundTol;
-    groundFrames = atGround && now - lastTouch > 250 ? groundFrames + 1 : 0;
-    if (groundFrames >= 3) end("Ground!");
+    const recent = trail.filter((t) => now - t.t < 120);
+    const vy = recent.length > 1 ? (recent.at(-1).y - recent[0].y) / Math.max(1, recent.at(-1).t - recent[0].t) * 1000 : 0;
+    const settled = atGround && Math.abs(vy) < ball.d * 2.5;
+    if (!settled) groundSince = null;
+    else if (groundSince == null) groundSince = now;
+    if (groundSince != null && now - groundSince > 250 && now - lastTouch > 250) end("Ground!");
   }
 }
 
 function end(reason) {
-  phase = "ended";
+  phase = "ended"; ends += 1; groundSince = null;
   say(`${reason}  ·  ${count}`);
   setTimeout(() => { if (phase === "ended") { phase = "ready"; } }, 1500);
 }
@@ -279,76 +339,126 @@ function end(reason) {
 function reset() { count = 0; phase = "ready"; lastTouch = 0; $("count").textContent = "0"; say(""); }
 
 // ---------- Drawing ----------
-function draw(dets, people, now) {
+const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
+  [23, 25], [25, 27], [27, 29], [29, 31], [27, 31], [24, 26], [26, 28], [28, 30], [30, 32], [28, 32]];
+let touchPulse = { t: -1e9, x: 0, y: 0 };
+
+function draw(cands, people, now) {
   const W = video.videoWidth, H = video.videoHeight;
   if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
   ctx.clearRect(0, 0, W, H);
-  const lw = Math.max(2, H / 300);
+  const lw = Math.max(2, H / 260);
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
 
   if (S.debug && groundY != null) {
-    ctx.setLineDash([12, 10]); ctx.strokeStyle = "rgba(255,255,255,.75)"; ctx.lineWidth = lw;
+    ctx.setLineDash([12, 10]); ctx.strokeStyle = "rgba(255,255,255,.6)"; ctx.lineWidth = lw * 0.6;
     ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(W, groundY); ctx.stroke(); ctx.setLineDash([]);
   }
-  if (S.debug && S.showAll) {
-    for (const d of dets) {
-      const b = d.boundingBox;
-      ctx.strokeStyle = "rgba(255,255,0,.8)"; ctx.lineWidth = lw;
-      ctx.strokeRect(b.originX, b.originY, b.width, b.height);
-    }
+  if (S.debug && searchBox) {
+    ctx.setLineDash([6, 8]); ctx.strokeStyle = "rgba(90,200,250,.5)"; ctx.lineWidth = lw * 0.5;
+    ctx.strokeRect(searchBox.x, searchBox.y, searchBox.w, searchBox.h); ctx.setLineDash([]);
   }
-  if (S.debug) {
-    for (const p of people) {
-      for (const [i, lm] of p.entries()) {
-        if (lm.visibility < 0.4) continue;
-        const isFoot = FOOT.includes(i), isHand = WRIST.includes(i);
-        if (!isFoot && !isHand && ![0, 11, 12, 23, 24, 25, 26].includes(i)) continue;
-        ctx.fillStyle = isFoot ? "#5ac8fa" : isHand ? "#ff3b30" : "#fff";
-        ctx.beginPath(); ctx.arc(lm.x * W, lm.y * H, lw * 2.5, 0, Math.PI * 2); ctx.fill();
-        if (isFoot && ball) {
-          ctx.strokeStyle = "rgba(90,200,250,.35)"; ctx.lineWidth = 1;
-          ctx.beginPath(); ctx.arc(lm.x * W, lm.y * H, ball.d * S.contact, 0, Math.PI * 2); ctx.stroke();
-        }
+  if (S.debug && S.showAll) {
+    ctx.strokeStyle = "rgba(255,255,0,.8)"; ctx.lineWidth = lw * 0.6;
+    for (const c of cands) ctx.strokeRect(c.box.originX, c.box.originY, c.box.width, c.box.height);
+  }
+
+  // Skeleton: glowing bones, bright joints, feet in orange.
+  for (const p of people) {
+    const P = (i) => p[i] && p[i].visibility > 0.4 ? [p[i].x * W, p[i].y * H] : null;
+    ctx.save();
+    ctx.shadowColor = "rgba(90,200,250,.9)"; ctx.shadowBlur = lw * 6;
+    for (const [a, b] of BONES) {
+      const A = P(a), B = P(b);
+      if (!A || !B) continue;
+      const lower = a >= 23;
+      const g = ctx.createLinearGradient(A[0], A[1], B[0], B[1]);
+      g.addColorStop(0, lower ? "rgba(255,255,255,.95)" : "rgba(90,200,250,.9)");
+      g.addColorStop(1, lower && b >= 27 ? "rgba(255,149,0,.95)" : "rgba(255,255,255,.95)");
+      ctx.strokeStyle = g; ctx.lineWidth = lw * (lower ? 2.2 : 1.6);
+      ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.stroke();
+    }
+    ctx.restore();
+    const head = P(0), sl = P(11), sr = P(12);
+    if (head && sl && sr) {
+      const r = Math.hypot(sl[0] - sr[0], sl[1] - sr[1]) * 0.32;
+      ctx.save(); ctx.shadowColor = "rgba(90,200,250,.9)"; ctx.shadowBlur = lw * 6;
+      ctx.strokeStyle = "rgba(255,255,255,.95)"; ctx.lineWidth = lw * 1.6;
+      ctx.beginPath(); ctx.arc(head[0], head[1], r, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    }
+    for (const i of [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 31, 32]) {
+      const J = P(i); if (!J) continue;
+      const foot = i >= 27;
+      ctx.fillStyle = foot ? "#ff9500" : "#fff";
+      ctx.beginPath(); ctx.arc(J[0], J[1], lw * (foot ? 2.6 : 1.8), 0, Math.PI * 2); ctx.fill();
+      if (S.debug && foot && ball && (i === 31 || i === 32)) {
+        ctx.strokeStyle = "rgba(255,149,0,.25)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(J[0], J[1], ball.d * S.contact, 0, Math.PI * 2); ctx.stroke();
       }
     }
   }
-  // Trail and ball.
-  ctx.lineCap = "round";
+
+  // Touch pulse: an expanding ring where the ball was kicked.
+  const age = (now - touchPulse.t) / 500;
+  if (age < 1) {
+    ctx.strokeStyle = `rgba(255,149,0,${1 - age})`; ctx.lineWidth = lw * 3 * (1 - age) + 1;
+    ctx.beginPath(); ctx.arc(touchPulse.x, touchPulse.y, (ball?.d ?? H / 12) * (0.6 + age * 1.6), 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // Ball: a fading comet trail and a glowing ring.
   for (let i = 1; i < trail.length; i++) {
-    ctx.strokeStyle = `rgba(255,149,0,${i / trail.length * .8})`; ctx.lineWidth = lw * (1 + 2 * i / trail.length);
+    const f = i / trail.length;
+    ctx.strokeStyle = `rgba(255,149,0,${f * .85})`; ctx.lineWidth = lw * (0.5 + 3 * f);
     ctx.beginPath(); ctx.moveTo(trail[i - 1].x, trail[i - 1].y); ctx.lineTo(trail[i].x, trail[i].y); ctx.stroke();
   }
   if (ball && now - lastSeen < 300) {
-    ctx.strokeStyle = "#ff9500"; ctx.lineWidth = lw * 2;
-    ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.d * 0.6, 0, Math.PI * 2); ctx.stroke();
+    ctx.save(); ctx.shadowColor = "#ff9500"; ctx.shadowBlur = lw * 8;
+    ctx.strokeStyle = "#ff9500"; ctx.lineWidth = lw * 1.8;
+    ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.d * 0.62, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
     if (S.debug) {
-      ctx.save(); ctx.translate(ball.x, ball.y - ball.d * 0.8);
-      if (S.facing === "user") ctx.scale(-1, 1);
+      ctx.save(); ctx.translate(ball.x, ball.y - ball.d * 0.85);
+      if (S.facing === "user" && !testSource) ctx.scale(-1, 1);
       ctx.fillStyle = "#ff9500"; ctx.font = `700 ${Math.round(H / 40)}px -apple-system, system-ui`;
       ctx.textAlign = "center"; ctx.fillText(Math.round(ball.score * 100) + "%", 0, 0); ctx.restore();
     }
   }
 }
 
+// The pose model sometimes "sees" a person in a ball or a wall. Keep a pose
+// only if its legs and torso are confidently there and it's a sensible size.
+function isRealBody(p) {
+  const legs = [23, 24, 25, 26, 27, 28];
+  if (legs.filter((i) => p[i] && p[i].visibility > 0.6).length < 5) return false;
+  const hipY = (p[23].y + p[24].y) / 2, kneeY = (p[25].y + p[26].y) / 2, ankleY = (p[27].y + p[28].y) / 2;
+  const shouldersSeen = p[11].visibility > 0.6 && p[12].visibility > 0.6;
+  const shoulderY = (p[11].y + p[12].y) / 2;
+  return ankleY - hipY > 0.12 && hipY < kneeY && kneeY < ankleY + 0.05 && (!shouldersSeen || shoulderY < hipY);
+}
+
 // ---------- Loop ----------
 let lastVideoTime = -1;
+function step(now) {
+  const people = (pose.detectForVideo(video, now).landmarks || []).filter(isRealBody);
+  const cands = findCandidates(people, now);
+  const found = pickBall(cands, now);
+  if (found) {
+    ball = found; lastSeen = now;
+    trail.push({ x: found.x, y: found.y, t: now });
+    if (trail.length > 20) trail.shift();
+  } else if (now - lastSeen > 300) {
+    trail = [];
+  }
+  detHistory.push(found ? 1 : 0); if (detHistory.length > 60) detHistory.shift();
+  judge(now, people);
+  return { people, cands, found };
+}
+
 function loop() {
   const now = performance.now();
   if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
-    const dets = detector.detectForVideo(video, now).detections;
-    const people = pose.detectForVideo(video, now).landmarks || [];
-    const found = pickBall(dets, now);
-    if (found) {
-      ball = found; lastSeen = now;
-      trail.push({ x: found.x, y: found.y, t: now });
-      if (trail.length > 20) trail.shift();
-    } else if (now - lastSeen > 300) {
-      trail = [];
-    }
-    detHistory.push(found ? 1 : 0); if (detHistory.length > 60) detHistory.shift();
-    judge(now, people);
-    draw(dets, people, now);
-
+    const { people, cands, found } = step(now);
+    draw(cands, people, now);
     fpsTimes.push(now); while (fpsTimes.length && now - fpsTimes[0] > 1000) fpsTimes.shift();
     const rate = detHistory.reduce((a, b) => a + b, 0) / detHistory.length;
     $("ballchip").textContent = found ? `Ball ${Math.round(found.score * 100)}%` : "Looking for ball";
@@ -357,7 +467,7 @@ function loop() {
       $("status").textContent =
         `${fpsTimes.length} fps · ${S.detector.replace("efficientdet_", "")}\n` +
         `ball seen ${Math.round(rate * 100)}% of frames\n` +
-        `people ${people.length} · ${phase}`;
+        `people ${people.length} · ${phase}${searchBox ? " · zoomed" : ""}`;
     }
     $("event").textContent = now - eventTime < 1500 ? eventText : "";
   }
@@ -367,21 +477,17 @@ function loop() {
 // Test mode ?src=clip.mp4&eval=1: steps through the clip at 15 fps (works in a
 // hidden tab) and leaves the results in window.evalResult.
 async function evaluate() {
-  const step = 1 / 15;
+  const fps = +(new URLSearchParams(location.search).get("fps") || 15);
   let frames = 0, seen = 0, scores = [];
-  for (let t = 0; t < video.duration; t += step) {
+  for (let t = 0; t < video.duration; t += 1 / fps) {
     video.currentTime = t;
     await new Promise((r) => video.addEventListener("seeked", r, { once: true }));
-    const now = t * 1000 + 1;
-    const dets = detector.detectForVideo(video, now).detections;
-    const people = pose.detectForVideo(video, now).landmarks || [];
-    const found = pickBall(dets, now);
-    if (found) { ball = found; lastSeen = now; trail.push({ x: found.x, y: found.y, t: now }); if (trail.length > 20) trail.shift(); seen++; scores.push(found.score); }
-    judge(now, people);
+    const { found } = step(t * 1000 + 1);
+    if (found) { seen++; scores.push(found.score); }
     frames++;
   }
-  window.evalResult = { detector: S.detector, frames, ballFrames: seen, ballRate: +(seen / frames).toFixed(3),
-    medianScore: scores.sort()[Math.floor(scores.length / 2)] ?? null, touches: count };
+  window.evalResult = { detector: S.detector, fps, frames, ballFrames: seen, ballRate: +(seen / frames).toFixed(3),
+    medianScore: scores.sort()[Math.floor(scores.length / 2)] ?? null, touches: count, totalTouches, ends };
 }
 
 // ---------- UI ----------
