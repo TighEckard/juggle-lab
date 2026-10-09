@@ -125,6 +125,9 @@ import { FilesetResolver, ObjectDetector, PoseLandmarker }
 
 const $ = (id) => document.getElementById(id);
 const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+// What the models look at: the camera/video, or (test mode with ?frames=) a canvas of still frames.
+let src = video;
+const FW = () => src.videoWidth ?? src.width, FH = () => src.videoHeight ?? src.height;
 
 // ---------- Settings (remembered on this phone) ----------
 const defaults = { v: 3, detector: "efficientdet_lite0", minScore: 0.1, contact: 1.8, cooldown: 180,
@@ -178,6 +181,7 @@ let stream;
 // Test mode: ?src=clip.mp4 plays a video file instead of the camera.
 const testSource = new URLSearchParams(location.search).get("src");
 async function startCamera() {
+  if (testFrames) return;
   if (testSource) {
     video.src = testSource; video.loop = true; video.muted = true;
     await new Promise((r) => video.addEventListener("loadeddata", r, { once: true }));
@@ -198,10 +202,10 @@ async function startCamera() {
 // Positions in video pixels. One ball: the detection nearest the last one.
 const FOOT = [29, 30, 31, 32, 27, 28];   // heels, foot tips, ankles
 const KNEE = [25, 26], HEAD = [0], WRIST = [15, 16, 17, 18, 19, 20];
-let ball = null, trail = [], lastSeen = 0, detHistory = [];
+let ball = null, trail = [], heights = [], lastSeen = 0, detHistory = [];
 let groundSince = null, totalTouches = 0, ends = 0;
 let count = 0, lastTouch = 0, phase = "ready", groundY = null, groundFrames = 0, eventText = "", eventTime = 0;
-let fpsTimes = [];
+let fpsTimes = [], log = [];   // test mode: what happened when
 
 // ---------- Ball search ----------
 // The detector sees a small square (320 px for Lite0). Shrinking a whole
@@ -213,7 +217,7 @@ const cropCtx = crop.getContext("2d", { willReadFrequently: false });
 let detectorClock = 0, frameIndex = 0, searchBox = null;
 
 function zoomRegion(people, now) {
-  const W = video.videoWidth, H = video.videoHeight, p = people[0];
+  const W = FW(), H = FH(), p = people[0];
   if (!p) return null;
   const vis = (i) => p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null;
   const hips = [23, 24].map(vis).filter(Boolean), feet = [27, 28, 29, 30, 31, 32].map(vis).filter(Boolean);
@@ -233,12 +237,12 @@ function zoomRegion(people, now) {
 }
 
 function detectIn(region) {
-  const W = video.videoWidth, H = video.videoHeight;
+  const W = FW(), H = FH();
   const size = S.detector === "efficientdet_lite2" ? 448 : 320;
-  let source = video, sx = 0, sy = 0, scale = 1;
+  let source = src, sx = 0, sy = 0, scale = 1;
   if (region) {
     crop.width = size; crop.height = size;
-    cropCtx.drawImage(video, region.x, region.y, region.w, region.h, 0, 0, size, size);
+    cropCtx.drawImage(src, region.x, region.y, region.w, region.h, 0, 0, size, size);
     source = crop; sx = region.x; sy = region.y; scale = region.w / size;
   }
   detectorClock += 1;
@@ -265,11 +269,14 @@ function findCandidates(people, now) {
 // ball should be (a plain background makes those reliable).
 function pickBall(cands, now) {
   if (ball && now - lastSeen < 500) {
-    const near = cands
-      .filter((c) => c.score >= Math.min(0.05, S.minScore) && Math.hypot(c.x - ball.x, c.y - ball.y) < ball.d * 4
-        && c.d > ball.d * 0.5 && c.d < ball.d * 2)
-      .sort((a, b) => Math.hypot(a.x - ball.x, a.y - ball.y) - Math.hypot(b.x - ball.x, b.y - ball.y));
-    if (near.length) return near[0];
+    // Faint detections only right next to the ball; confident ones a bit further.
+    const near = cands.filter((c) => c.score >= Math.min(0.05, S.minScore) && c.d > ball.d * 0.6 && c.d < ball.d * 1.6
+      && Math.hypot(c.x - ball.x, c.y - ball.y) < ball.d * (c.score >= S.minScore ? 4 : 2));
+    // Stay with the same ball: closest wins, but confidence counts too, so the
+    // real ball beats a faint white sock or cone next to it, and a second ball
+    // a few sizes away doesn't steal the track.
+    const cost = (c) => Math.hypot(c.x - ball.x, c.y - ball.y) / ball.d - 2 * c.score;
+    if (near.length) return near.sort((a, b) => cost(a) - cost(b))[0];
   }
   const sure = cands.filter((c) => c.score >= S.minScore);
   return sure.length ? sure.sort((a, b) => b.score - a.score)[0] : null;
@@ -299,7 +306,7 @@ function report() {
   return [
     `Juggle Lab report (${Math.round((Date.now() - stats.since) / 1000)} s, ${stats.frames} frames, ~${fps} fps)`,
     `device: ${os ? os[0] : "?"}`,
-    `camera: ${S.facing} ${video.videoWidth}x${video.videoHeight} - detector ${S.detector}`,
+    `camera: ${S.facing} ${FW()}x${FH()} - detector ${S.detector}`,
     `settings: min ${Math.round(S.minScore * 100)}% - touch ${S.contact}x - cooldown ${S.cooldown} ms - ground ${S.groundTol}x`,
     `person seen ${pct(stats.pose)} - zoomed ${pct(stats.zoomed)} - ball locked ${pct(stats.ball)}`,
     `no ball guess at all ${pct(stats.noGuess)}`,
@@ -308,25 +315,25 @@ function report() {
   ].join("\n");
 }
 
-// The ball's latest low point: within the last ~0.6 s it fell at least `drop`
-// to its lowest point and has since risen at least `drop`. Image y grows downward.
-function findTurn(now) {
+// The ball's latest low point: within the last ~0.6 s it fell at least 0.3
+// ball sizes to its lowest point and has since risen at least `minRise` ball
+// sizes. Image y grows downward.
+function findTurn(now, minRise = 0.3) {
   const recent = trail.filter((p) => now - p.t < 600 && p.t > lastTouch);
   if (recent.length < 3) return null;
   let low = 0;
   for (let i = 1; i < recent.length; i++) if (recent[i].y > recent[low].y) low = i;
   if (low === 0 || low === recent.length - 1) return null;
-  const drop = ball.d * 0.15;
   const fell = recent[low].y - Math.min(...recent.slice(0, low).map((p) => p.y));
   const rose = recent[low].y - Math.min(...recent.slice(low + 1).map((p) => p.y));
-  return fell >= drop && rose >= drop ? recent[low] : null;
+  return fell >= ball.d * 0.3 && rose >= ball.d * minRise ? { ...recent[low], rose: rose / ball.d } : null;
 }
 
 function say(text) { eventText = text; eventTime = performance.now(); }
 
 function judge(now, people) {
   const p = people[0];
-  const W = video.videoWidth, H = video.videoHeight;
+  const W = FW(), H = FH();
   const pt = (i) => p && p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null;
 
   // Ground line: the lowest foot point while standing, smoothed.
@@ -342,14 +349,27 @@ function judge(now, people) {
   // Touch: the ball fell, bottomed out, and is going back up, and its lowest
   // point was within reach of a foot (or knee/head). Hovering near a foot
   // doesn't count, and a touch hidden behind the foot still shows as a turn.
-  const turn = findTurn(now);
-  if (turn && p && turn.t - lastTouch > S.cooldown) {
+  // Starting a run takes a real kick-up (the ball rises almost a ball size), so
+  // a ball rolling or bobbling at the feet doesn't start one.
+  const turn = findTurn(now, phase === "live" ? 0.3 : 0.8);
+  // A bounce with the ball down on the floor (dribbling, rolling under the
+  // sole) counts only if the ball then really lifts, a full ball size.
+  const footLine = p ? Math.max(-Infinity, ...FOOT.map(pt).filter(Boolean).map((f) => f.y)) : -Infinity;
+  const onFloor = turn && turn.y + ball.d / 2 > footLine - ball.d * 0.3;
+  // A juggled ball keeps going up and down; one sitting on the ground (toe taps,
+  // a foot resting on it) stays within about half a ball size (its box jiggles as feet cover it).
+  const ys = heights.map((h) => h.y), bobbing = (Math.max(...ys) - Math.min(...ys)) / ball.d < 0.9;
+  if (turn && p && turn.t - lastTouch > S.cooldown && (!onFloor || turn.rose >= 1) && !bobbing) {
     const reach = ball.d * S.contact;
     const parts = [...FOOT, ...(S.upperBody ? [...KNEE, ...HEAD] : [])];
     const dist = (list) => Math.min(Infinity, ...list.map(pt).filter(Boolean).map((q) => Math.hypot(q.x - turn.x, q.y - turn.y)));
     const body = dist(parts), hand = dist(WRIST);
     lastTouch = turn.t;
     if (hand < reach * 0.6 && hand < body * 0.5 && S.handsFoul && phase === "live") { end("Hand!"); return; }
+    // Above the hips and closer to a hand than to the head: carried or rolled
+    // on the arms, not a juggle. (Below the hips, hanging hands are often near.)
+    const hipTop = Math.min(Infinity, ...[23, 24].map(pt).filter(Boolean).map((h) => h.y));
+    if (turn.y < hipTop && hand < reach && hand < body) return;
     // The ball only turns back up in the air if something hit it, so a turn
     // below the hips and within the legs' reach counts even if the foot dots
     // are a little off.
@@ -361,6 +381,7 @@ function judge(now, people) {
     if (body < reach || byLegs) {
       if (phase !== "live") { phase = "live"; count = 0; }
       count += 1; totalTouches += 1; stats.touches++;
+      log.push({ t: +(turn.t / 1000).toFixed(2), touch: count, by: body < reach ? "part" : "legs" });
       $("count").textContent = count;
       navigator.vibrate?.(15);
       touchPulse = { t: now, x: turn.x, y: turn.y };
@@ -389,6 +410,7 @@ function end(reason) {
   $("count").textContent = count;
   phase = "ended"; ends += 1; groundSince = null;
   stats.ends[reason] = (stats.ends[reason] || 0) + 1;
+  log.push({ t: +(lastSeen / 1000).toFixed(2), end: reason, at: count });
   say(`${reason}  ·  ${count}`);
   setTimeout(() => { if (phase === "ended") { phase = "ready"; } }, 1500);
 }
@@ -401,7 +423,7 @@ const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 
 let touchPulse = { t: -1e9, x: 0, y: 0 };
 
 function draw(cands, people, now) {
-  const W = video.videoWidth, H = video.videoHeight;
+  const W = FW(), H = FH();
   if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
   ctx.clearRect(0, 0, W, H);
   const lw = Math.max(2, H / 260);
@@ -492,20 +514,37 @@ function isRealBody(p) {
   return ankleY - hipY > 0.12 && hipY < kneeY && kneeY < ankleY + 0.05 && (!shouldersSeen || shoulderY < hipY);
 }
 
+// The player is the person nearest the ball (bystanders, posters and patterns
+// that look like people stay out of it); with no ball yet, the biggest person.
+function sortPlayers(people, now) {
+  const W = FW(), H = FH();
+  const legs = (p) => [23, 24, 25, 26, 27, 28].map((i) => ({ x: p[i].x * W, y: p[i].y * H }));
+  const size = (p) => { const l = legs(p); return Math.max(...l.map((q) => q.y)) - Math.min(...l.map((q) => q.y)); };
+  const gap = (p) => Math.min(...legs(p).map((q) => Math.hypot(q.x - ball.x, q.y - ball.y)));
+  if (ball && now - lastSeen < 1000) people.sort((a, b) => gap(a) - gap(b));
+  else people.sort((a, b) => size(b) - size(a));
+}
+
 // ---------- Loop ----------
 let lastVideoTime = -1;
 function step(now) {
-  const people = (pose.detectForVideo(video, now).landmarks || []).filter(isRealBody);
+  const people = (pose.detectForVideo(src, now).landmarks || []).filter(isRealBody);
+  sortPlayers(people, now);
   const cands = findCandidates(people, now);
   const found = pickBall(cands, now);
   if (found) {
+    // A jump of several ball sizes is a different object: start a fresh path.
+    if (ball && Math.hypot(found.x - ball.x, found.y - ball.y) > ball.d * 4) { trail = []; heights = []; }
     ball = found; lastSeen = now;
     trail.push({ x: found.x, y: found.y, t: now });
     if (trail.length > 20) trail.shift();
+    heights.push({ y: found.y, t: now });
+    while (heights.length && now - heights[0].t > 1200) heights.shift();
   } else if (now - lastSeen > 300) {
-    trail = [];
+    trail = []; heights = [];
   }
   detHistory.push(found ? 1 : 0); if (detHistory.length > 60) detHistory.shift();
+  sortPlayers(people, now);
   judge(now, people);
   return { people, cands, found };
 }
@@ -535,21 +574,61 @@ function loop() {
   requestAnimationFrame(loop);
 }
 
-// Test mode ?src=clip.mp4&eval=1: steps through the clip at 15 fps (works in a
-// hidden tab) and leaves the results in window.evalResult.
-async function evaluate() {
-  const fps = +(new URLSearchParams(location.search).get("fps") || 15);
-  let frames = 0, seen = 0, scores = [];
-  for (let t = 0.01; t < video.duration; t += 1 / fps) {
+// Test mode ?src=clip.mp4&eval=1: steps through the clip and leaves the results
+// in window.evalResult. A hidden tab may stop decoding video, so for automated
+// runs use ?frames=dir/&eval=1 with still frames dir/0001.jpg, 0002.jpg, ...
+// (ffmpeg -i clip.mp4 -q:v 4 dir/%04d.jpg) and &fps= the clip's frame rate.
+const testFrames = new URLSearchParams(location.search).get("frames");
+async function nextFrame(i, fps) {
+  if (!testFrames) {
+    const t = 0.01 + i / fps;
+    if (t >= video.duration) return false;
     video.currentTime = t;
     await Promise.race([new Promise((r) => video.addEventListener("seeked", r, { once: true })),
                         new Promise((r) => setTimeout(r, 2000))]);
-    const { found } = step(t * 1000 + 1);
+    return true;
+  }
+  // (Image.decode() never finishes in a hidden tab; createImageBitmap does.)
+  const url = `${testFrames}${String(i + 1).padStart(4, "0")}.jpg`;
+  let res;
+  for (let tries = 0; !res; tries++) {
+    try { res = await fetch(url); }
+    catch (e) { if (tries > 5) throw e; await new Promise((r) => setTimeout(r, 1000)); }
+  }
+  if (!res.ok) return false;
+  const img = await createImageBitmap(await res.blob());
+  if (src === video) src = document.createElement("canvas");
+  src.width = img.width; src.height = img.height;
+  src.getContext("2d").drawImage(img, 0, 0);
+  img.close();
+  window.evalProgress = i;
+  return true;
+}
+async function evaluate() {
+  const fps = +(new URLSearchParams(location.search).get("fps") || 15);
+  let frames = 0, seen = 0, posed = 0, frozen = 0, scores = [], trace = [], track = [], lastPixels = "";
+  // Count frames identical to the one before (a sign the video stopped decoding).
+  const probe = document.createElement("canvas"); probe.width = 16; probe.height = 9;
+  const probeCtx = probe.getContext("2d", { willReadFrequently: true });
+  for (let i = 0; await nextFrame(i, fps); i++) {
+    probeCtx.drawImage(src, 0, 0, 16, 9);
+    const pixels = probeCtx.getImageData(0, 0, 16, 9).data.join();
+    if (pixels === lastPixels) frozen++;
+    lastPixels = pixels;
+    const { found, people } = step(i * 1000 / fps + 1);
     if (found) { seen++; scores.push(found.score); }
+    if (people.length) posed++;
+    // Ball height above the ground line, in ball sizes.
+    trace.push(found && groundY != null ? +((groundY - found.y) / found.d).toFixed(1) : null);
+    // Per frame: ball [x, y, size, score%], ground line, and the judged person's feet and hips.
+    const p = people[0], P = (i) => p && p[i].visibility > 0.4 ? [Math.round(p[i].x * FW()), Math.round(p[i].y * FH())] : null;
+    track.push({ b: found ? [found.x, found.y, found.d, found.score * 100].map(Math.round) : null, g: groundY && Math.round(groundY),
+      n: people.length, k: p ? [23, 24, 25, 26, 27, 28, 31, 32].map(P) : null });
     frames++;
   }
   window.evalResult = { detector: S.detector, fps, frames, ballFrames: seen, ballRate: +(seen / frames).toFixed(3),
-    medianScore: scores.sort()[Math.floor(scores.length / 2)] ?? null, touches: count, totalTouches, ends };
+    poseRate: +(posed / frames).toFixed(3), frozen, medianScore: scores.sort()[Math.floor(scores.length / 2)] ?? null,
+    touches: count, totalTouches, ends, log, trace, track };
 }
 
 // ---------- UI ----------
@@ -565,7 +644,7 @@ $("go").addEventListener("click", async () => {
   $("start").classList.add("hidden");
   for (const id of ["topbar", "count", "bottombar"]) $(id).classList.remove("hidden");
   $("status").classList.toggle("hidden", !S.debug);
-  if (testSource && new URLSearchParams(location.search).has("eval")) { await evaluate(); return; }
+  if ((testSource || testFrames) && new URLSearchParams(location.search).has("eval")) { await evaluate(); return; }
   requestAnimationFrame(loop);
 });
 $("flip").addEventListener("click", async () => { S.facing = S.facing === "user" ? "environment" : "user"; save(); await startCamera(); });
