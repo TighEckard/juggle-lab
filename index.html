@@ -540,9 +540,10 @@ function loop() {
 async function evaluate() {
   const fps = +(new URLSearchParams(location.search).get("fps") || 15);
   let frames = 0, seen = 0, scores = [];
-  for (let t = 0; t < video.duration; t += 1 / fps) {
+  for (let t = 0.01; t < video.duration; t += 1 / fps) {
     video.currentTime = t;
-    await new Promise((r) => video.addEventListener("seeked", r, { once: true }));
+    await Promise.race([new Promise((r) => video.addEventListener("seeked", r, { once: true })),
+                        new Promise((r) => setTimeout(r, 2000))]);
     const { found } = step(t * 1000 + 1);
     if (found) { seen++; scores.push(found.score); }
     frames++;
