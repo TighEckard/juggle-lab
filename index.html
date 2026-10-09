@@ -85,6 +85,7 @@
 <div class="top hidden" id="topbar">
   <button class="btn" id="flip" aria-label="Switch camera">⟲</button>
   <span class="chip" id="ballchip">Ball —</span>
+  <span class="chip hidden" id="modechip"></span>
   <button class="btn" id="settings" aria-label="Settings">⚙︎</button>
 </div>
 <div id="count" class="hidden">0</div>
@@ -192,6 +193,13 @@ const testSource = new URLSearchParams(location.search).get("src");
 const params = new URLSearchParams(location.search);
 const appMode = params.has("app");
 const toApp = (message) => { try { window.webkit?.messageHandlers?.footy?.postMessage(message); } catch {} };
+// Challenge modes (?mode=rightFoot | leftFoot): only touches with that foot
+// count, a touch with the other foot ends the run, and thigh or head touches
+// don't count (and don't end it).
+const ONE_FOOT = { rightFoot: { foot: "right", title: "Right Foot Only" }, leftFoot: { foot: "left", title: "Left Foot Only" } };
+const mode = ONE_FOOT[params.get("mode")] ? params.get("mode") : "classic";
+const oneFoot = ONE_FOOT[mode] ?? null;
+if (oneFoot) { $("modechip").textContent = oneFoot.title; $("modechip").classList.remove("hidden"); }
 if (appMode) {
   S.facing = params.get("facing") === "user" ? "user" : "environment";
   S.debug = params.has("debug");
@@ -223,6 +231,7 @@ let ball = null, trail = [], heights = [], flight = [], inHand = [], lastSeen = 
 let groundSince = null, totalTouches = 0, ends = 0;
 let count = 0, lastTouch = 0, phase = "ready", groundY = null, groundFrames = 0, eventText = "", eventTime = 0;
 let fpsTimes = [], log = [];   // test mode: what happened when
+let poses = [];   // the player's pose over the last half second, for telling the feet apart
 
 // ---------- Ball search ----------
 // The detector sees a small square (320 px for Lite0). Shrinking a whole
@@ -348,9 +357,37 @@ function findTurn(now, minRise = 0.3) {
 
 function say(text) { eventText = text; eventTime = performance.now(); }
 
+// Which foot touched the ball: the side of the body the ball was on. The pose
+// model's own left/right names for the feet often swap for a few frames when a
+// leg lifts to kick, but the hips and shoulders keep theirs, and in a juggle the
+// foot meets the ball on its own side. Averaged over the frames around the touch.
+// Returns "left", "right", or null when the ball was too near the middle (or the
+// player stood side-on) to tell.
+const SIDE_MIN = 0.35;   // ball sizes off the middle of the hips
+function touchSide(turn) {
+  const W = FW();
+  let sum = 0, n = 0;
+  for (const { t, p } of poses) {
+    if (Math.abs(t - turn.t) > 90) continue;
+    const x = (i) => p[i] && p[i].visibility > 0.5 ? p[i].x * W : null;
+    const lh = x(23), rh = x(24), ls = x(11), rs = x(12);
+    if (lh == null || rh == null || Math.abs(lh - rh) < ball.d * 0.2) continue;
+    // Facing the camera, the left hip is on the right of the picture (the
+    // camera's own picture, never mirrored), and the other way round from behind.
+    const facing = Math.sign(lh - rh) + (ls != null && rs != null ? Math.sign(ls - rs) : 0);
+    if (facing === 0) continue;
+    sum += Math.sign(facing) * (turn.x - (lh + rh) / 2) / ball.d; n++;
+  }
+  if (!n) return { off: null, side: null };
+  const off = sum / n;   // + toward the player's left
+  return { off: +off.toFixed(2), side: Math.abs(off) < SIDE_MIN ? null : off > 0 ? "left" : "right" };
+}
+
 function judge(now, people) {
   const p = people[0];
   const W = FW(), H = FH();
+  if (p) poses.push({ t: now, p });
+  while (poses.length && now - poses[0].t > 500) poses.shift();
   const pt = (i) => p && p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null;
 
   // Ground line: the lowest foot point while standing, smoothed.
@@ -432,16 +469,36 @@ function judge(now, people) {
     const feetX = feet.length ? feet.reduce((s, f) => s + f.x, 0) / feet.length : null;
     const byLegs = hipY != null && turn.y > hipY && feetX != null && Math.abs(turn.x - feetX) < legSpan * 0.9;
     if (body < reach || byLegs) {
-      if (phase !== "live") { phase = "live"; count = 0; toApp({ type: "start" }); }
-      count += 1; totalTouches += 1; stats.touches++;
       // Which part touched it, and how high the ball went before (for the app's stats).
       const named = [[27, "leftFoot"], [29, "leftFoot"], [31, "leftFoot"], [28, "rightFoot"], [30, "rightFoot"],
         [32, "rightFoot"], [25, "leftThigh"], [26, "rightThigh"], [0, "head"]]
         .map(([i, part]) => ({ part, q: pt(i) })).filter((n) => n.q)
         .sort((a, b) => Math.hypot(a.q.x - turn.x, a.q.y - turn.y) - Math.hypot(b.q.x - turn.x, b.q.y - turn.y));
-      toApp({ type: "touch", count, part: named[0]?.part ?? "rightFoot", time: turn.t / 1000,
+      // A thigh or head touch has the ball above the knees; lower down it's a foot.
+      const upper = /Thigh|head/.test(named[0]?.part ?? "") && kneeY != null && turn.y < kneeY;
+      const { off, side } = touchSide(turn);
+      // The foot: from the side of the body, not the pose model's foot names.
+      const foot = upper ? null : side;
+      const part = upper ? named[0].part : side ? side + "Foot" : (named[0]?.part ?? "rightFoot").replace("Thigh", "Foot").replace("head", "rightFoot");
+      const at = { t: +(turn.t / 1000).toFixed(2), part, off, at: [Math.round(turn.x), Math.round(turn.y), Math.round(ball.d)] };
+      if (oneFoot) {
+        // The other foot ends a run (before one, it just doesn't start it);
+        // thighs and the head don't count.
+        if (foot && foot !== oneFoot.foot) {
+          log.push({ ...at, wrong: true });
+          if (phase === "live") end("Wrong Foot!");
+          return;
+        }
+        if (upper) { log.push({ ...at, skip: "upper" }); if (phase === "live") say("Foot only"); return; }
+        // Ball too near the middle to tell which foot: it counts during a run
+        // (benefit of the doubt), but can't start one.
+        if (!foot && phase !== "live") { log.push({ ...at, skip: "unsure" }); return; }
+      }
+      if (phase !== "live") { phase = "live"; count = 0; toApp({ type: "start", mode }); }
+      count += 1; totalTouches += 1; stats.touches++;
+      toApp({ type: "touch", count, part, time: turn.t / 1000,
         height: Number.isFinite(highest) ? Math.max(0, (turn.y - ball.d / 2 - highest) / ball.d) : null });
-      log.push({ t: +(turn.t / 1000).toFixed(2), touch: count, by: body < reach ? "part" : "legs" });
+      log.push({ ...at, touch: count, by: body < reach ? "part" : "legs", raw: named[0]?.part ?? null });
       $("count").textContent = count;
       navigator.vibrate?.(15);
       touchPulse = { t: now, x: turn.x, y: turn.y };
@@ -470,9 +527,9 @@ function end(reason) {
   $("count").textContent = count;
   phase = "ended"; ends += 1; groundSince = null;
   stats.ends[reason] = (stats.ends[reason] || 0) + 1;
-  log.push({ t: +(lastSeen / 1000).toFixed(2), end: reason, at: count });
+  log.push({ t: +(lastSeen / 1000).toFixed(2), end: reason, count });
   say(`${reason}  ·  ${count}`);
-  const reasons = { "Ground!": "drop", "Hand!": "hand", "Out of view!": "lost", "Stopped!": "stopped" };
+  const reasons = { "Ground!": "drop", "Hand!": "hand", "Out of view!": "lost", "Stopped!": "stopped", "Wrong Foot!": "wrongFoot" };
   toApp({ type: "end", reason: reasons[reason] ?? "drop", count });
   // In the app one run is one session; on the web, go again.
   if (!appMode) setTimeout(() => { if (phase === "ended") { phase = "ready"; } }, 1500);
@@ -671,7 +728,10 @@ async function nextFrame(i, fps) {
   const img = await createImageBitmap(await res.blob());
   if (src === video) src = document.createElement("canvas");
   src.width = img.width; src.height = img.height;
-  src.getContext("2d").drawImage(img, 0, 0);
+  const g = src.getContext("2d");
+  // &flip=1: mirror the frames (how a mirrored selfie picture would look).
+  if (params.has("flip")) { g.setTransform(-1, 0, 0, 1, img.width, 0); }
+  g.drawImage(img, 0, 0); g.setTransform(1, 0, 0, 1, 0, 0);
   img.close();
   window.evalProgress = i;
   return true;
@@ -694,13 +754,17 @@ async function evaluate() {
     trace.push(found && groundY != null ? +((groundY - found.y) / found.d).toFixed(1) : null);
     // Per frame: ball [x, y, size, score%], ground line, and the judged person's feet and hips.
     const p = people[0], P = (i) => p && p[i].visibility > 0.4 ? [Math.round(p[i].x * FW()), Math.round(p[i].y * FH())] : null;
+    // k: hips, knees, ankles, foot tips, then heels; v: their visibility %; z: depth (x100)
+    const K = [23, 24, 25, 26, 27, 28, 31, 32, 29, 30];
     track.push({ b: found ? [found.x, found.y, found.d, found.score * 100].map(Math.round) : null, g: groundY && Math.round(groundY),
-      n: people.length, k: p ? [23, 24, 25, 26, 27, 28, 31, 32].map(P) : null });
+      n: people.length, k: p ? K.map(P) : null, v: p ? K.map((i) => Math.round(p[i].visibility * 100)) : null,
+      z: p ? K.map((i) => Math.round(p[i].z * 100)) : null,
+      s: p ? [0, 11, 12].map((i) => [Math.round(p[i].x * FW()), Math.round(p[i].y * FH()), Math.round(p[i].visibility * 100)]) : null });
     frames++;
   }
   window.evalResult = { detector: S.detector, fps, frames, ballFrames: seen, ballRate: +(seen / frames).toFixed(3),
     poseRate: +(posed / frames).toFixed(3), frozen, medianScore: scores.sort()[Math.floor(scores.length / 2)] ?? null,
-    touches: count, totalTouches, ends, log, trace, track };
+    mode, touches: count, totalTouches, ends, log, trace, track };
 }
 
 // ---------- UI ----------
