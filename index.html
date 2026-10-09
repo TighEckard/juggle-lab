@@ -64,6 +64,8 @@
   #start p { margin: 0; color: var(--muted); max-width: 320px; }
   #start .btn { height: 52px; font-size: 17px; padding: 0 28px; justify-self: center; }
   .hidden { display: none !important; }
+  .app #flip, .app #settings, .app #bottombar, .app #go { display: none !important; }
+  .app .top { justify-content: center; }
 </style>
 </head>
 <body>
@@ -114,6 +116,7 @@
     <small>How close (in ball sizes) to the ground line counts as hitting the ground.</small></div>
   <div class="toggle"><span>Hands end the run</span><input type="checkbox" id="handsFoul"></div>
   <div class="toggle"><span>Count knees and head</span><input type="checkbox" id="upperBody"></div>
+  <div class="toggle"><span>Ball must go above the knees</span><input type="checkbox" id="aboveKnees"></div>
   <div class="toggle"><span>Show all detections</span><input type="checkbox" id="showAll"></div>
   <div class="row"><button class="btn primary" id="copyReport">Copy Report</button><button class="btn" id="clearReport">Clear</button>
     <small id="reportNote">Juggle for 30 seconds, then copy and paste the report to Claude.</small></div>
@@ -131,7 +134,8 @@ const FW = () => src.videoWidth ?? src.width, FH = () => src.videoHeight ?? src.
 
 // ---------- Settings (remembered on this phone) ----------
 const defaults = { v: 3, detector: "efficientdet_lite0", minScore: 0.1, contact: 1.8, cooldown: 180,
-  groundTol: 0.35, handsFoul: false, upperBody: true, showAll: false, facing: "environment", debug: true };
+  groundTol: 0.35, handsFoul: false, upperBody: true, showAll: false, facing: "environment", debug: true,
+  aboveKnees: true };
 let S = { ...defaults };
 try {
   const saved = JSON.parse(localStorage.getItem("juggleLab") || "{}");
@@ -147,7 +151,7 @@ for (const key of ["minScore", "contact", "cooldown", "groundTol"]) {
   input.value = S[key]; out.textContent = fmt[key](S[key]);
   input.addEventListener("input", () => { S[key] = +input.value; out.textContent = fmt[key](S[key]); save(); });
 }
-for (const key of ["handsFoul", "upperBody", "showAll"]) {
+for (const key of ["handsFoul", "upperBody", "aboveKnees", "showAll"]) {
   $(key).checked = S[key];
   $(key).addEventListener("change", () => { S[key] = $(key).checked; save(); });
 }
@@ -180,6 +184,18 @@ async function loadModels() {
 let stream;
 // Test mode: ?src=clip.mp4 plays a video file instead of the camera.
 const testSource = new URLSearchParams(location.search).get("src");
+
+// App mode (?app=1): this page is the camera screen inside the Footy iPhone app
+// (the same file, bundled). It starts on its own and reports touches and the
+// end of each run to the app, which does the rest (saving, XP, results).
+const params = new URLSearchParams(location.search);
+const appMode = params.has("app");
+const toApp = (message) => { try { window.webkit?.messageHandlers?.footy?.postMessage(message); } catch {} };
+if (appMode) {
+  S.facing = params.get("facing") === "user" ? "user" : "environment";
+  S.debug = params.has("debug");
+  document.documentElement.classList.add("app");
+}
 async function startCamera() {
   if (testFrames) return;
   if (testSource) {
@@ -202,7 +218,7 @@ async function startCamera() {
 // Positions in video pixels. One ball: the detection nearest the last one.
 const FOOT = [29, 30, 31, 32, 27, 28];   // heels, foot tips, ankles
 const KNEE = [25, 26], HEAD = [0], WRIST = [15, 16, 17, 18, 19, 20];
-let ball = null, trail = [], heights = [], lastSeen = 0, detHistory = [];
+let ball = null, trail = [], heights = [], flight = [], inHand = [], lastSeen = 0, detHistory = [];
 let groundSince = null, totalTouches = 0, ends = 0;
 let count = 0, lastTouch = 0, phase = "ready", groundY = null, groundFrames = 0, eventText = "", eventTime = 0;
 let fpsTimes = [], log = [];   // test mode: what happened when
@@ -344,7 +360,33 @@ function judge(now, people) {
       if (phase !== "live") groundY = groundY == null ? lowest : groundY * 0.9 + lowest * 0.1;
     }
   }
+  if (phase === "live" && now - lastSeen > 2500) { end("Out of view!"); return; }
   if (!ball || now - lastSeen > 120) return;
+
+  // Held: the ball stays at a hand and moves with it. Picking the ball up and
+  // moving it up and down is never a juggle, and holding it during a run ends
+  // the run. (A ball juggled past a hanging hand moves on its own while the
+  // hand stays put.)
+  const hands = [[15, 17, 19], [16, 18, 20]].map((ids) => ids.map(pt).filter(Boolean))
+    .filter((h) => h.length).map((h) => ({ x: h.reduce((s, q) => s + q.x, 0) / h.length, y: h.reduce((s, q) => s + q.y, 0) / h.length }));
+  const holdHand = hands.sort((a, b) => Math.hypot(a.x - ball.x, a.y - ball.y) - Math.hypot(b.x - ball.x, b.y - ball.y))[0];
+  const near = !!holdHand && now - lastSeen < 60 && Math.hypot(holdHand.x - ball.x, holdHand.y - ball.y) < ball.d * 1.5;
+  inHand.push({ t: now, near, bx: ball.x, by: ball.y, hand: near ? holdHand : null });
+  while (inHand.length && now - inHand[0].t > 1000) inHand.shift();
+  const heldFor = (ms) => {
+    const r = inHand.filter((h) => now - h.t < ms);
+    if (r.length < 5 || r.filter((h) => h.near).length < r.length * 0.8) return false;
+    let path = 0, apart = 0;
+    for (let k = 1; k < r.length; k++) {
+      const a = r[k - 1], b = r[k];
+      if (!a.hand || !b.hand) continue;
+      path += Math.hypot(b.bx - a.bx, b.by - a.by);
+      apart += Math.hypot((b.bx - a.bx) - (b.hand.x - a.hand.x), (b.by - a.by) - (b.hand.y - a.hand.y));
+    }
+    // Moving with the hand, or resting in it.
+    return apart < path * 0.4 || path < ball.d * 0.3;
+  };
+  if (phase === "live" && heldFor(700)) { end("Hand!"); return; }
 
   // Touch: the ball fell, bottomed out, and is going back up, and its lowest
   // point was within reach of a foot (or knee/head). Hovering near a foot
@@ -360,16 +402,26 @@ function judge(now, people) {
   // a foot resting on it) stays within about half a ball size (its box jiggles as feet cover it).
   const ys = heights.map((h) => h.y), bobbing = (Math.max(...ys) - Math.min(...ys)) / ball.d < 0.9;
   if (turn && p && turn.t - lastTouch > S.cooldown && (!onFloor || turn.rose >= 1) && !bobbing) {
+    // In or near a hand lately: carried, not juggled.
+    if (heldFor(600)) { lastTouch = turn.t; return; }
     const reach = ball.d * S.contact;
     const parts = [...FOOT, ...(S.upperBody ? [...KNEE, ...HEAD] : [])];
     const dist = (list) => Math.min(Infinity, ...list.map(pt).filter(Boolean).map((q) => Math.hypot(q.x - turn.x, q.y - turn.y)));
     const body = dist(parts), hand = dist(WRIST);
+    const previousTouch = lastTouch;
     lastTouch = turn.t;
     if (hand < reach * 0.6 && hand < body * 0.5 && S.handsFoul && phase === "live") { end("Hand!"); return; }
     // Above the hips and closer to a hand than to the head: carried or rolled
     // on the arms, not a juggle. (Below the hips, hanging hands are often near.)
     const hipTop = Math.min(Infinity, ...[23, 24].map(pt).filter(Boolean).map((h) => h.y));
     if (turn.y < hipTop && hand < reach && hand < body) return;
+
+    // Since the last touch the ball has to have been above the knees (its top
+    // over the knee line). Low taps don't count.
+    const knees = KNEE.map(pt).filter(Boolean);
+    const kneeY = knees.length ? knees.reduce((s, k) => s + k.y, 0) / knees.length : null;
+    const highest = Math.min(Infinity, ...flight.filter((f) => f.t > previousTouch && f.t < turn.t).map((f) => f.top));
+    if (S.aboveKnees && kneeY != null && !(highest < kneeY)) return;
     // The ball only turns back up in the air if something hit it, so a turn
     // below the hips and within the legs' reach counts even if the foot dots
     // are a little off.
@@ -379,8 +431,15 @@ function judge(now, people) {
     const feetX = feet.length ? feet.reduce((s, f) => s + f.x, 0) / feet.length : null;
     const byLegs = hipY != null && turn.y > hipY && feetX != null && Math.abs(turn.x - feetX) < legSpan * 0.9;
     if (body < reach || byLegs) {
-      if (phase !== "live") { phase = "live"; count = 0; }
+      if (phase !== "live") { phase = "live"; count = 0; toApp({ type: "start" }); }
       count += 1; totalTouches += 1; stats.touches++;
+      // Which part touched it, and how high the ball went before (for the app's stats).
+      const named = [[27, "leftFoot"], [29, "leftFoot"], [31, "leftFoot"], [28, "rightFoot"], [30, "rightFoot"],
+        [32, "rightFoot"], [25, "leftThigh"], [26, "rightThigh"], [0, "head"]]
+        .map(([i, part]) => ({ part, q: pt(i) })).filter((n) => n.q)
+        .sort((a, b) => Math.hypot(a.q.x - turn.x, a.q.y - turn.y) - Math.hypot(b.q.x - turn.x, b.q.y - turn.y));
+      toApp({ type: "touch", count, part: named[0]?.part ?? "rightFoot", time: turn.t / 1000,
+        height: Number.isFinite(highest) ? Math.max(0, (turn.y - ball.d / 2 - highest) / ball.d) : null });
       log.push({ t: +(turn.t / 1000).toFixed(2), touch: count, by: body < reach ? "part" : "legs" });
       $("count").textContent = count;
       navigator.vibrate?.(15);
@@ -412,8 +471,17 @@ function end(reason) {
   stats.ends[reason] = (stats.ends[reason] || 0) + 1;
   log.push({ t: +(lastSeen / 1000).toFixed(2), end: reason, at: count });
   say(`${reason}  ·  ${count}`);
-  setTimeout(() => { if (phase === "ended") { phase = "ready"; } }, 1500);
+  const reasons = { "Ground!": "drop", "Hand!": "hand", "Out of view!": "lost", "Stopped!": "stopped" };
+  toApp({ type: "end", reason: reasons[reason] ?? "drop", count });
+  // In the app one run is one session; on the web, go again.
+  if (!appMode) setTimeout(() => { if (phase === "ended") { phase = "ready"; } }, 1500);
 }
+
+// Called by the app.
+window.footy = {
+  stop() { if (phase !== "ended") end("Stopped!"); },
+  async flip() { S.facing = S.facing === "user" ? "environment" : "user"; await startCamera(); },
+};
 
 function reset() { count = 0; phase = "ready"; lastTouch = 0; $("count").textContent = "0"; say(""); }
 
@@ -540,6 +608,9 @@ function step(now) {
     if (trail.length > 20) trail.shift();
     heights.push({ y: found.y, t: now });
     while (heights.length && now - heights[0].t > 1200) heights.shift();
+    // The ball's top over the last 3 s, for the knee rule.
+    flight.push({ top: found.y - found.d / 2, t: now });
+    while (flight.length && now - flight[0].t > 3000) flight.shift();
   } else if (now - lastSeen > 300) {
     trail = []; heights = [];
   }
@@ -639,8 +710,10 @@ $("go").addEventListener("click", async () => {
   } catch (e) {
     $("loading").textContent = "Couldn't start: " + (e.message || e);
     $("go").disabled = false;
+    toApp({ type: "error", message: String(e.message || e) });
     return;
   }
+  toApp({ type: "ready" });
   $("start").classList.add("hidden");
   for (const id of ["topbar", "count", "bottombar"]) $(id).classList.remove("hidden");
   $("status").classList.toggle("hidden", !S.debug);
@@ -658,6 +731,7 @@ $("copyReport").addEventListener("click", async () => {
 $("clearReport").addEventListener("click", () => { stats = freshStats(); $("reportNote").textContent = "Cleared. Juggle, then copy."; });
 $("settings").addEventListener("click", () => $("sheet").classList.add("open"));
 $("close").addEventListener("click", () => $("sheet").classList.remove("open"));
+if (appMode) $("go").click();
 </script>
 </body>
 </html>
