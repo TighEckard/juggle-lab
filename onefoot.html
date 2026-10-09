@@ -1,0 +1,805 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Juggle Lab</title>
+<style>
+  :root {
+    --accent: #ff9500;
+    --bg: #000;
+    --text: #fff;
+    --muted: rgba(255,255,255,.65);
+    --panel: rgba(28,28,30,.92);
+    --chip: rgba(255,255,255,.14);
+    --good: #34c759;
+    --bad: #ff3b30;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .mirror { transform: scaleX(-1); }
+  .top { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 12px; right: 12px;
+    display: flex; gap: 8px; align-items: center; justify-content: space-between; pointer-events: none; }
+  .top > * { pointer-events: auto; }
+  .chip { background: var(--chip); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border-radius: 999px; padding: 8px 12px; font-weight: 600; font-size: 13px; white-space: nowrap;
+    font-variant-numeric: tabular-nums; }
+  .btn { border: 0; color: var(--text); background: var(--chip); backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px); border-radius: 999px; min-width: 44px; height: 44px;
+    padding: 0 14px; font: 600 15px -apple-system, system-ui, sans-serif; }
+  #count { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 54px); left: 0; right: 0;
+    text-align: center; font: 800 120px/1 -apple-system, "SF Pro Rounded", system-ui, sans-serif;
+    text-shadow: 0 4px 24px rgba(0,0,0,.6); font-variant-numeric: tabular-nums; pointer-events: none; }
+  #event.big { font-size: 36px; color: #fff; }
+  #event { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 190px); left: 0; right: 0;
+    text-align: center; font-weight: 700; font-size: 20px; color: var(--accent); min-height: 26px;
+    text-shadow: 0 2px 10px rgba(0,0,0,.7); pointer-events: none; }
+  #status { position: fixed; left: 12px; bottom: calc(max(12px, env(safe-area-inset-bottom)) + 64px);
+    background: rgba(0,0,0,.55); border-radius: 12px; padding: 8px 10px; font: 600 12px/1.45 ui-monospace,
+    SFMono-Regular, Menlo, monospace; white-space: pre; pointer-events: none; }
+  .bottom { position: fixed; left: 12px; right: 12px; bottom: max(12px, env(safe-area-inset-bottom));
+    display: flex; gap: 8px; justify-content: center; }
+  .bottom .btn { flex: 1; max-width: 180px; }
+  .primary { background: var(--accent) !important; color: #000 !important; }
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; max-height: 70vh; overflow-y: auto;
+    background: var(--panel); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+    border-radius: 20px 20px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+    transform: translateY(105%); transition: transform .25s ease; }
+  #sheet.open { transform: none; }
+  #sheet h2 { margin: 0 0 12px; font-size: 20px; display: flex; justify-content: space-between; align-items: center; }
+  .row { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; margin: 14px 0; }
+  .row label { font-weight: 600; }
+  .row output { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+  .row small { grid-column: 1 / -1; color: var(--muted); }
+  select { font: inherit; color: var(--text); background: var(--chip); border: 0; border-radius: 10px; padding: 8px 10px; }
+  .toggle { display: flex; justify-content: space-between; align-items: center; margin: 14px 0; font-weight: 600; }
+  .toggle input { width: 22px; height: 22px; accent-color: var(--accent); }
+  #start { position: fixed; inset: 0; display: grid; place-content: center; text-align: center; padding: 24px; gap: 14px; }
+  #start h1 { margin: 0; font-size: 34px; }
+  #start p { margin: 0; color: var(--muted); max-width: 320px; }
+  #start .btn { height: 52px; font-size: 17px; padding: 0 28px; justify-self: center; }
+  .hidden { display: none !important; }
+  .app #flip, .app #settings, .app #bottombar, .app #go { display: none !important; }
+  .app .top { justify-content: center; }
+  .app #start h1, .app #start p:not(#loading) { display: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div id="start">
+  <h1>Juggle Lab</h1>
+  <p>Prop your phone up, step back so your legs and the ball are in view, and juggle.</p>
+  <button class="btn primary" id="go">Start Camera</button>
+  <p id="loading" class="hidden">Loading models…</p>
+</div>
+
+<div class="top hidden" id="topbar">
+  <button class="btn" id="flip" aria-label="Switch camera">⟲</button>
+  <span class="chip" id="ballchip">Ball —</span>
+  <span class="chip hidden" id="modechip"></span>
+  <button class="btn" id="settings" aria-label="Settings">⚙︎</button>
+</div>
+<div id="count" class="hidden">0</div>
+<div id="event"></div>
+<div id="status" class="hidden"></div>
+<div class="bottom hidden" id="bottombar">
+  <button class="btn" id="reset">Reset</button>
+  <button class="btn" id="debug">Debug</button>
+</div>
+
+<div id="sheet" role="dialog" aria-label="Settings">
+  <h2>Settings <button class="btn" id="close">Done</button></h2>
+  <div class="row"><label for="detector">Ball detector</label>
+    <select id="detector">
+      <option value="efficientdet_lite0">EfficientDet-Lite0 (fast)</option>
+      <option value="efficientdet_lite2">EfficientDet-Lite2 (accurate)</option>
+    </select>
+  </div>
+  <div class="row"><label for="minScore">Min ball confidence</label><output id="minScoreOut"></output>
+    <input type="range" id="minScore" min="0.02" max="0.6" step="0.01">
+    <small>Lower finds more balls but more mistakes.</small></div>
+  <div class="row"><label for="contact">Touch distance</label><output id="contactOut"></output>
+    <input type="range" id="contact" min="0.4" max="3" step="0.1">
+    <small>How close (in ball sizes) the ball must get to a foot, knee or head.</small></div>
+  <div class="row"><label for="cooldown">Cooldown</label><output id="cooldownOut"></output>
+    <input type="range" id="cooldown" min="80" max="600" step="10">
+    <small>Minimum time between two touches.</small></div>
+  <div class="row"><label for="groundTol">Ground tolerance</label><output id="groundTolOut"></output>
+    <input type="range" id="groundTol" min="0" max="1.5" step="0.05">
+    <small>How close (in ball sizes) to the ground line counts as hitting the ground.</small></div>
+  <div class="toggle"><span>Hands end the run</span><input type="checkbox" id="handsFoul"></div>
+  <div class="toggle"><span>Count knees and head</span><input type="checkbox" id="upperBody"></div>
+  <div class="toggle"><span>Ball must go above the knees</span><input type="checkbox" id="aboveKnees"></div>
+  <div class="toggle"><span>Show all detections</span><input type="checkbox" id="showAll"></div>
+  <div class="row"><button class="btn primary" id="copyReport">Copy Report</button><button class="btn" id="clearReport">Clear</button>
+    <small id="reportNote">Juggle for 30 seconds, then copy and paste the report to Claude.</small></div>
+</div>
+
+<script type="module">
+import { FilesetResolver, ObjectDetector, PoseLandmarker }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const $ = (id) => document.getElementById(id);
+const video = $("video"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+// What the models look at: the camera/video, or (test mode with ?frames=) a canvas of still frames.
+let src = video;
+const FW = () => src.videoWidth ?? src.width, FH = () => src.videoHeight ?? src.height;
+
+// ---------- Settings (remembered on this phone) ----------
+const defaults = { v: 3, detector: "efficientdet_lite0", minScore: 0.1, contact: 1.8, cooldown: 180,
+  groundTol: 0.35, handsFoul: false, upperBody: true, showAll: false, facing: "environment", debug: true,
+  aboveKnees: true };
+let S = { ...defaults };
+try {
+  const saved = JSON.parse(localStorage.getItem("juggleLab") || "{}");
+  if ((saved.v ?? 1) < 2) delete saved.minScore;  // new default for clean backgrounds
+  if ((saved.v ?? 1) < 3) { delete saved.handsFoul; delete saved.contact; }
+  Object.assign(S, saved, { v: defaults.v });
+} catch {}
+const save = () => { try { localStorage.setItem("juggleLab", JSON.stringify(S)); } catch {} };
+const fmt = { minScore: (v) => Math.round(v * 100) + "%", contact: (v) => v.toFixed(1) + "×",
+  cooldown: (v) => v + " ms", groundTol: (v) => v.toFixed(2) + "×" };
+for (const key of ["minScore", "contact", "cooldown", "groundTol"]) {
+  const input = $(key), out = $(key + "Out");
+  input.value = S[key]; out.textContent = fmt[key](S[key]);
+  input.addEventListener("input", () => { S[key] = +input.value; out.textContent = fmt[key](S[key]); save(); });
+}
+for (const key of ["handsFoul", "upperBody", "aboveKnees", "showAll"]) {
+  $(key).checked = S[key];
+  $(key).addEventListener("change", () => { S[key] = $(key).checked; save(); });
+}
+$("detector").value = S.detector;
+$("detector").addEventListener("change", async () => { S.detector = $("detector").value; save(); await loadDetector(); });
+
+// ---------- Models ----------
+let vision, detector, pose;
+async function loadDetector() {
+  detector?.close?.();
+  const opts = (delegate) => ({
+    baseOptions: { modelAssetPath:
+      `https://storage.googleapis.com/mediapipe-models/object_detector/${S.detector}/float16/1/${S.detector}.tflite`, delegate },
+    runningMode: "VIDEO", scoreThreshold: 0.02, maxResults: 5, categoryAllowlist: ["sports ball"] });
+  try { detector = await ObjectDetector.createFromOptions(vision, opts("GPU")); }
+  catch { detector = await ObjectDetector.createFromOptions(vision, opts("CPU")); }
+}
+async function loadModels() {
+  vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  const poseOpts = (delegate) => ({
+    baseOptions: { modelAssetPath:
+      "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", delegate },
+    runningMode: "VIDEO", numPoses: 2 });
+  try { pose = await PoseLandmarker.createFromOptions(vision, poseOpts("GPU")); }
+  catch { pose = await PoseLandmarker.createFromOptions(vision, poseOpts("CPU")); }
+  await loadDetector();
+}
+
+// ---------- Camera ----------
+let stream;
+// Test mode: ?src=clip.mp4 plays a video file instead of the camera.
+const testSource = new URLSearchParams(location.search).get("src");
+
+// App mode (?app=1): this page is the camera screen inside the Footy iPhone app
+// (the same file, bundled). It starts on its own and reports touches and the
+// end of each run to the app, which does the rest (saving, XP, results).
+const params = new URLSearchParams(location.search);
+const appMode = params.has("app");
+const toApp = (message) => { try { window.webkit?.messageHandlers?.footy?.postMessage(message); } catch {} };
+// Challenge modes (?mode=rightFoot | leftFoot): only touches with that foot
+// count, a touch with the other foot ends the run, and thigh or head touches
+// don't count (and don't end it).
+const ONE_FOOT = { rightFoot: { foot: "right", title: "Right Foot Only" }, leftFoot: { foot: "left", title: "Left Foot Only" } };
+const mode = ONE_FOOT[params.get("mode")] ? params.get("mode") : "classic";
+const oneFoot = ONE_FOOT[mode] ?? null;
+if (oneFoot) {
+  $("modechip").textContent = oneFoot.title; $("modechip").classList.remove("hidden");
+  document.querySelector("#start h1").textContent = oneFoot.title;
+}
+if (appMode) {
+  S.facing = params.get("facing") === "user" ? "user" : "environment";
+  S.debug = params.has("debug");
+  document.documentElement.classList.add("app");
+}
+async function startCamera() {
+  if (testFrames) return;
+  if (testSource) {
+    video.src = testSource; video.loop = true; video.muted = true;
+    await new Promise((r) => video.addEventListener("loadeddata", r, { once: true }));
+    if (!new URLSearchParams(location.search).has("eval")) await video.play();
+    return;
+  }
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
+    facingMode: S.facing, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } } });
+  video.srcObject = stream;
+  await video.play();
+  const mirror = S.facing === "user";
+  video.classList.toggle("mirror", mirror);
+  canvas.classList.toggle("mirror", mirror);
+}
+
+// ---------- Tracking + judge ----------
+// Positions in video pixels. One ball: the detection nearest the last one.
+const FOOT = [29, 30, 31, 32, 27, 28];   // heels, foot tips, ankles
+const KNEE = [25, 26], HEAD = [0], WRIST = [15, 16, 17, 18, 19, 20];
+let ball = null, trail = [], heights = [], flight = [], inHand = [], lastSeen = 0, detHistory = [];
+let groundSince = null, totalTouches = 0, ends = 0;
+let count = 0, lastTouch = 0, phase = "ready", groundY = null, groundFrames = 0, eventText = "", eventTime = 0;
+let fpsTimes = [], log = [];   // test mode: what happened when
+let poses = [];   // the player's pose over the last half second, for telling the feet apart
+
+// ---------- Ball search ----------
+// The detector sees a small square (320 px for Lite0). Shrinking a whole
+// 1280×720 frame to that leaves a ball at the feet only a few pixels wide, so
+// we mostly look at a zoomed square around the player's legs (and the ball's
+// last spot), and check the whole frame every few frames.
+const crop = document.createElement("canvas");
+const cropCtx = crop.getContext("2d", { willReadFrequently: false });
+let detectorClock = 0, frameIndex = 0, searchBox = null;
+
+function zoomRegion(people, now) {
+  const W = FW(), H = FH(), p = people[0];
+  if (!p) return null;
+  const vis = (i) => p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null;
+  const hips = [23, 24].map(vis).filter(Boolean), feet = [27, 28, 29, 30, 31, 32].map(vis).filter(Boolean);
+  if (!feet.length) return null;
+  const footY = Math.max(...feet.map((f) => f.y));
+  const footX = feet.reduce((s, f) => s + f.x, 0) / feet.length;
+  const hipY = hips.length ? hips.reduce((s, h) => s + h.y, 0) / hips.length : footY - H * 0.3;
+  const leg = Math.max(footY - hipY, H * 0.08);
+  // Square from just above the hips to below the feet, centered on the feet
+  // (or between the feet and the ball if it's drifting sideways).
+  const side = Math.min(Math.max(W, H), leg * 2.2);
+  let cx = footX, cy = footY - side * 0.42;
+  if (ball && now - lastSeen < 600) { cx = (cx + ball.x) / 2; cy = Math.min(cy, ball.y); }
+  const x = Math.max(0, Math.min(W - side, cx - side / 2));
+  const y = Math.max(0, Math.min(H - side, cy - side / 2));
+  return { x, y, w: Math.min(side, W), h: Math.min(side, H) };
+}
+
+function detectIn(region) {
+  const W = FW(), H = FH();
+  const size = S.detector === "efficientdet_lite2" ? 448 : 320;
+  let source = src, sx = 0, sy = 0, scale = 1;
+  if (region) {
+    crop.width = size; crop.height = size;
+    cropCtx.drawImage(src, region.x, region.y, region.w, region.h, 0, 0, size, size);
+    source = crop; sx = region.x; sy = region.y; scale = region.w / size;
+  }
+  detectorClock += 1;
+  return detector.detectForVideo(source, detectorClock).detections.map((d) => {
+    const b = d.boundingBox;
+    const box = { originX: sx + b.originX * scale, originY: sy + b.originY * scale,
+                  width: b.width * scale, height: b.height * scale };
+    return { x: box.originX + box.width / 2, y: box.originY + box.height / 2,
+             d: (box.width + box.height) / 2, score: d.categories[0].score, box };
+  });
+}
+
+function findCandidates(people, now) {
+  frameIndex += 1;
+  searchBox = zoomRegion(people, now);
+  let cands = searchBox ? detectIn(searchBox) : [];
+  // Whole frame every 4th frame, or whenever the zoomed look finds nothing.
+  if (!searchBox || frameIndex % 4 === 0 || !cands.some((c) => c.score >= S.minScore)) cands = cands.concat(detectIn(null));
+  return cands;
+}
+
+// One ball. Anything at or above the confidence bar counts. Once the ball is
+// locked, much fainter detections still count if they're right where the
+// ball should be (a plain background makes those reliable).
+function pickBall(cands, now) {
+  if (ball && now - lastSeen < 500) {
+    // Faint detections only right next to the ball; confident ones a bit further.
+    const near = cands.filter((c) => c.score >= Math.min(0.05, S.minScore) && c.d > ball.d * 0.6 && c.d < ball.d * 1.6
+      && Math.hypot(c.x - ball.x, c.y - ball.y) < ball.d * (c.score >= S.minScore ? 4 : 2));
+    // Stay with the same ball: closest wins, but confidence counts too, so the
+    // real ball beats a faint white sock or cone next to it, and a second ball
+    // a few sizes away doesn't steal the track.
+    const cost = (c) => Math.hypot(c.x - ball.x, c.y - ball.y) / ball.d - 2 * c.score;
+    if (near.length) return near.sort((a, b) => cost(a) - cost(b))[0];
+  }
+  const sure = cands.filter((c) => c.score >= S.minScore);
+  return sure.length ? sure.sort((a, b) => b.score - a.score)[0] : null;
+}
+
+// ---------- Report ----------
+// Counts everything per frame so a test can be summed up and pasted back.
+const freshStats = () => ({ since: Date.now(), frames: 0, pose: 0, zoomed: 0, ball: 0, noGuess: 0,
+  best: [0, 0, 0, 0, 0, 0], fps: [], touches: 0, ends: {} });
+let stats = freshStats();
+const BUCKETS = [0.05, 0.1, 0.2, 0.3, 0.5];
+function record(people, cands, found, fps) {
+  stats.frames++;
+  if (people.length) stats.pose++;
+  if (searchBox) stats.zoomed++;
+  if (found) stats.ball++;
+  const best = Math.max(0, ...cands.map((c) => c.score));
+  if (!cands.length) stats.noGuess++;
+  stats.best[BUCKETS.filter((b) => best >= b).length]++;
+  if (fps) stats.fps.push(fps);
+}
+function report() {
+  const pct = (n) => Math.round(100 * n / Math.max(1, stats.frames)) + "%";
+  const fps = stats.fps.length ? Math.round(stats.fps.reduce((a, b) => a + b, 0) / stats.fps.length) : "-";
+  const labels = ["<5%", "5-10%", "10-20%", "20-30%", "30-50%", "50%+"];
+  const os = navigator.userAgent.match(/iPhone OS [0-9_]+|Android [0-9.]+|Mac OS X [0-9_]+|Windows NT [0-9.]+/);
+  return [
+    `Juggle Lab report (${Math.round((Date.now() - stats.since) / 1000)} s, ${stats.frames} frames, ~${fps} fps)`,
+    `device: ${os ? os[0] : "?"}`,
+    `camera: ${S.facing} ${FW()}x${FH()} - detector ${S.detector}`,
+    `settings: min ${Math.round(S.minScore * 100)}% - touch ${S.contact}x - cooldown ${S.cooldown} ms - ground ${S.groundTol}x`,
+    `person seen ${pct(stats.pose)} - zoomed ${pct(stats.zoomed)} - ball locked ${pct(stats.ball)}`,
+    `no ball guess at all ${pct(stats.noGuess)}`,
+    `best ball guess per frame: ${labels.map((l, i) => `${l} ${pct(stats.best[i])}`).join(", ")}`,
+    `touches ${stats.touches} - ends ${JSON.stringify(stats.ends)}`,
+  ].join("\n");
+}
+
+// The ball's latest low point: within the last ~0.6 s it fell at least 0.3
+// ball sizes to its lowest point and has since risen at least `minRise` ball
+// sizes. Image y grows downward.
+function findTurn(now, minRise = 0.3) {
+  const recent = trail.filter((p) => now - p.t < 600 && p.t > lastTouch);
+  if (recent.length < 3) return null;
+  let low = 0;
+  for (let i = 1; i < recent.length; i++) if (recent[i].y > recent[low].y) low = i;
+  if (low === 0 || low === recent.length - 1) return null;
+  const fell = recent[low].y - Math.min(...recent.slice(0, low).map((p) => p.y));
+  const rose = recent[low].y - Math.min(...recent.slice(low + 1).map((p) => p.y));
+  return fell >= ball.d * 0.3 && rose >= ball.d * minRise ? { ...recent[low], rose: rose / ball.d } : null;
+}
+
+function say(text) { eventText = text; eventTime = performance.now(); }
+
+// Which foot touched the ball: the side of the body the ball was on. The pose
+// model's own left/right names for the feet often swap for a few frames when a
+// leg lifts to kick, but the hips and shoulders keep theirs, and in a juggle the
+// foot meets the ball on its own side. Averaged over the frames around the touch.
+// Returns "left", "right", or null when the ball was too near the middle (or the
+// player stood side-on) to tell.
+const SIDE_MIN = 0.35;   // ball sizes off the middle of the hips
+function touchSide(turn) {
+  const W = FW();
+  let sum = 0, n = 0;
+  for (const { t, p } of poses) {
+    if (Math.abs(t - turn.t) > 90) continue;
+    const x = (i) => p[i] && p[i].visibility > 0.5 ? p[i].x * W : null;
+    const lh = x(23), rh = x(24), ls = x(11), rs = x(12);
+    if (lh == null || rh == null || Math.abs(lh - rh) < ball.d * 0.2) continue;
+    // Facing the camera, the left hip is on the right of the picture (the
+    // camera's own picture, never mirrored), and the other way round from behind.
+    const facing = Math.sign(lh - rh) + (ls != null && rs != null ? Math.sign(ls - rs) : 0);
+    if (facing === 0) continue;
+    sum += Math.sign(facing) * (turn.x - (lh + rh) / 2) / ball.d; n++;
+  }
+  if (!n) return { off: null, side: null };
+  const off = sum / n;   // + toward the player's left
+  return { off: +off.toFixed(2), side: Math.abs(off) < SIDE_MIN ? null : off > 0 ? "left" : "right" };
+}
+
+function judge(now, people) {
+  const p = people[0];
+  const W = FW(), H = FH();
+  if (p) poses.push({ t: now, p });
+  while (poses.length && now - poses[0].t > 500) poses.shift();
+  const pt = (i) => p && p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null;
+
+  // Ground line: the lowest foot point while standing, smoothed.
+  if (p) {
+    const feet = FOOT.map(pt).filter(Boolean);
+    if (feet.length) {
+      const lowest = Math.max(...feet.map((f) => f.y));
+      if (phase !== "live") groundY = groundY == null ? lowest : groundY * 0.9 + lowest * 0.1;
+    }
+  }
+  if (phase === "live" && now - lastSeen > 2500) { end("Out of view!"); return; }
+  if (!ball || now - lastSeen > 120) return;
+
+  // Held: the ball stays at a hand and moves with it. Picking the ball up and
+  // moving it up and down is never a juggle, and holding it during a run ends
+  // the run. (A ball juggled past a hanging hand moves on its own while the
+  // hand stays put.)
+  const hands = [[15, 17, 19], [16, 18, 20]].map((ids) => ids.map(pt).filter(Boolean))
+    .filter((h) => h.length).map((h) => ({ x: h.reduce((s, q) => s + q.x, 0) / h.length, y: h.reduce((s, q) => s + q.y, 0) / h.length }));
+  const holdHand = hands.sort((a, b) => Math.hypot(a.x - ball.x, a.y - ball.y) - Math.hypot(b.x - ball.x, b.y - ball.y))[0];
+  const near = !!holdHand && now - lastSeen < 60 && Math.hypot(holdHand.x - ball.x, holdHand.y - ball.y) < ball.d * 1.5;
+  inHand.push({ t: now, near, bx: ball.x, by: ball.y, hand: near ? holdHand : null });
+  while (inHand.length && now - inHand[0].t > 1000) inHand.shift();
+  const heldFor = (ms) => {
+    const r = inHand.filter((h) => now - h.t < ms);
+    if (r.length < 5 || r.filter((h) => h.near).length < r.length * 0.8) return false;
+    let path = 0, apart = 0;
+    for (let k = 1; k < r.length; k++) {
+      const a = r[k - 1], b = r[k];
+      if (!a.hand || !b.hand) continue;
+      path += Math.hypot(b.bx - a.bx, b.by - a.by);
+      apart += Math.hypot((b.bx - a.bx) - (b.hand.x - a.hand.x), (b.by - a.by) - (b.hand.y - a.hand.y));
+    }
+    // Moving with the hand, or resting in it.
+    return apart < path * 0.4 || path < ball.d * 0.3;
+  };
+  if (phase === "live" && heldFor(700)) { end("Hand!"); return; }
+
+  // Touch: the ball fell, bottomed out, and is going back up, and its lowest
+  // point was within reach of a foot (or knee/head). Hovering near a foot
+  // doesn't count, and a touch hidden behind the foot still shows as a turn.
+  // Starting a run takes a real kick-up (the ball rises almost a ball size), so
+  // a ball rolling or bobbling at the feet doesn't start one.
+  const turn = findTurn(now, phase === "live" ? 0.3 : 0.8);
+  // A bounce with the ball down on the floor (dribbling, rolling under the
+  // sole) counts only if the ball then really lifts, a full ball size.
+  const footLine = p ? Math.max(-Infinity, ...FOOT.map(pt).filter(Boolean).map((f) => f.y)) : -Infinity;
+  const onFloor = turn && turn.y + ball.d / 2 > footLine - ball.d * 0.3;
+  // A juggled ball keeps going up and down; one sitting on the ground (toe taps,
+  // a foot resting on it) stays within about half a ball size (its box jiggles as feet cover it).
+  const ys = heights.map((h) => h.y), bobbing = (Math.max(...ys) - Math.min(...ys)) / ball.d < 0.9;
+  if (turn && p && turn.t - lastTouch > S.cooldown && (!onFloor || turn.rose >= 1) && !bobbing) {
+    // In or near a hand lately: carried, not juggled.
+    if (heldFor(600)) { lastTouch = turn.t; return; }
+    const reach = ball.d * S.contact;
+    const parts = [...FOOT, ...(S.upperBody ? [...KNEE, ...HEAD] : [])];
+    const dist = (list) => Math.min(Infinity, ...list.map(pt).filter(Boolean).map((q) => Math.hypot(q.x - turn.x, q.y - turn.y)));
+    const body = dist(parts), hand = dist(WRIST);
+    const previousTouch = lastTouch;
+    lastTouch = turn.t;
+    if (hand < reach * 0.6 && hand < body * 0.5 && S.handsFoul && phase === "live") { end("Hand!"); return; }
+    // Above the hips and closer to a hand than to the head: carried or rolled
+    // on the arms, not a juggle. (Below the hips, hanging hands are often near.)
+    const hipTop = Math.min(Infinity, ...[23, 24].map(pt).filter(Boolean).map((h) => h.y));
+    if (turn.y < hipTop && hand < reach && hand < body) return;
+
+    // Since the last touch the ball has to have been above the knees (its top
+    // over the knee line). Low taps don't count.
+    const knees = KNEE.map(pt).filter(Boolean);
+    const kneeY = knees.length ? knees.reduce((s, k) => s + k.y, 0) / knees.length : null;
+    const highest = Math.min(Infinity, ...flight.filter((f) => f.t > previousTouch && f.t < turn.t).map((f) => f.top));
+    if (S.aboveKnees && kneeY != null && !(highest < kneeY)) return;
+    // The ball only turns back up in the air if something hit it, so a turn
+    // below the hips and within the legs' reach counts even if the foot dots
+    // are a little off.
+    const hips = [23, 24].map(pt).filter(Boolean), feet = FOOT.map(pt).filter(Boolean);
+    const hipY = hips.length ? Math.min(...hips.map((h) => h.y)) : null;
+    const legSpan = feet.length && hipY != null ? Math.max(...feet.map((f) => f.y)) - hipY : 0;
+    const feetX = feet.length ? feet.reduce((s, f) => s + f.x, 0) / feet.length : null;
+    const byLegs = hipY != null && turn.y > hipY && feetX != null && Math.abs(turn.x - feetX) < legSpan * 0.9;
+    if (body < reach || byLegs) {
+      // Which part touched it, and how high the ball went before (for the app's stats).
+      const named = [[27, "leftFoot"], [29, "leftFoot"], [31, "leftFoot"], [28, "rightFoot"], [30, "rightFoot"],
+        [32, "rightFoot"], [25, "leftThigh"], [26, "rightThigh"], [0, "head"]]
+        .map(([i, part]) => ({ part, q: pt(i) })).filter((n) => n.q)
+        .sort((a, b) => Math.hypot(a.q.x - turn.x, a.q.y - turn.y) - Math.hypot(b.q.x - turn.x, b.q.y - turn.y));
+      // A thigh or head touch has the ball above the knees; lower down it's a foot.
+      const upper = /Thigh|head/.test(named[0]?.part ?? "") && kneeY != null && turn.y < kneeY;
+      const { off, side } = touchSide(turn);
+      // The foot: from the side of the body, not the pose model's foot names.
+      const foot = upper ? null : side;
+      const part = upper ? named[0].part : side ? side + "Foot" : (named[0]?.part ?? "rightFoot").replace("Thigh", "Foot").replace("head", "rightFoot");
+      const at = { t: +(turn.t / 1000).toFixed(2), part, off, at: [Math.round(turn.x), Math.round(turn.y), Math.round(ball.d)] };
+      if (oneFoot) {
+        // The other foot ends a run (before one, it just doesn't start it);
+        // thighs and the head don't count.
+        if (foot && foot !== oneFoot.foot) {
+          log.push({ ...at, wrong: true });
+          if (phase === "live") end("Wrong Foot!");
+          return;
+        }
+        if (upper) { log.push({ ...at, skip: "upper" }); if (phase === "live") say("Foot only"); return; }
+        // Ball too near the middle to tell which foot: it counts during a run
+        // (benefit of the doubt), but can't start one.
+        if (!foot && phase !== "live") { log.push({ ...at, skip: "unsure" }); return; }
+      }
+      if (phase !== "live") { phase = "live"; count = 0; toApp({ type: "start", mode }); }
+      count += 1; totalTouches += 1; stats.touches++;
+      toApp({ type: "touch", count, part, time: turn.t / 1000,
+        height: Number.isFinite(highest) ? Math.max(0, (turn.y - ball.d / 2 - highest) / ball.d) : null });
+      log.push({ ...at, touch: count, by: body < reach ? "part" : "legs", raw: named[0]?.part ?? null });
+      $("count").textContent = count;
+      navigator.vibrate?.(15);
+      touchPulse = { t: now, x: turn.x, y: turn.y };
+      say("Touch");
+      return;
+    }
+  }
+
+  // Ground: the ball stays at the ground line, rolling or resting, for a
+  // quarter second. (A low touch also dips to the ground line, but it's
+  // moving fast and leaves right away.)
+  if (phase === "live" && groundY != null) {
+    const bottom = ball.y + ball.d / 2;
+    const atGround = bottom > groundY - ball.d * S.groundTol;
+    const recent = trail.filter((t) => now - t.t < 120);
+    const vy = recent.length > 1 ? (recent.at(-1).y - recent[0].y) / Math.max(1, recent.at(-1).t - recent[0].t) * 1000 : 0;
+    const seen = now - lastSeen < 60 && recent.length >= 2;
+    const settled = seen && atGround && Math.abs(vy) < ball.d * 2;
+    if (!settled) groundSince = null;
+    else if (groundSince == null) groundSince = now;
+    if (groundSince != null && now - groundSince > 400 && now - lastTouch > 400) end("Ground!");
+  }
+}
+
+function end(reason) {
+  $("count").textContent = count;
+  phase = "ended"; ends += 1; groundSince = null;
+  stats.ends[reason] = (stats.ends[reason] || 0) + 1;
+  log.push({ t: +(lastSeen / 1000).toFixed(2), end: reason, count });
+  say(`${reason}  ·  ${count}`);
+  const reasons = { "Ground!": "drop", "Hand!": "hand", "Out of view!": "lost", "Stopped!": "stopped", "Wrong Foot!": "wrongFoot" };
+  toApp({ type: "end", reason: reasons[reason] ?? "drop", count });
+  // In the app one run is one session; on the web, go again.
+  if (!appMode) setTimeout(() => { if (phase === "ended") { phase = "ready"; } }, 1500);
+}
+
+// Called by the app.
+window.footy = {
+  stop() { if (phase !== "ended") end("Stopped!"); },
+  async flip() { S.facing = S.facing === "user" ? "environment" : "user"; await startCamera(); },
+};
+
+function reset() { count = 0; phase = "ready"; lastTouch = 0; $("count").textContent = "0"; say(""); }
+
+// ---------- Drawing ----------
+const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
+  [23, 25], [25, 27], [27, 29], [29, 31], [27, 31], [24, 26], [26, 28], [28, 30], [30, 32], [28, 32]];
+let touchPulse = { t: -1e9, x: 0, y: 0 };
+
+function draw(cands, people, now) {
+  const W = FW(), H = FH();
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  ctx.clearRect(0, 0, W, H);
+  const lw = Math.max(2, H / 260);
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+
+  if (S.debug && groundY != null) {
+    ctx.setLineDash([12, 10]); ctx.strokeStyle = "rgba(255,255,255,.6)"; ctx.lineWidth = lw * 0.6;
+    ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(W, groundY); ctx.stroke(); ctx.setLineDash([]);
+  }
+  if (S.debug && searchBox) {
+    ctx.setLineDash([6, 8]); ctx.strokeStyle = "rgba(90,200,250,.5)"; ctx.lineWidth = lw * 0.5;
+    ctx.strokeRect(searchBox.x, searchBox.y, searchBox.w, searchBox.h); ctx.setLineDash([]);
+  }
+  if (S.debug && S.showAll) {
+    ctx.strokeStyle = "rgba(255,255,0,.8)"; ctx.lineWidth = lw * 0.6;
+    for (const c of cands) ctx.strokeRect(c.box.originX, c.box.originY, c.box.width, c.box.height);
+  }
+
+  // Skeleton: glowing bones, bright joints, feet in orange.
+  for (const p of people) {
+    const P = (i) => p[i] && p[i].visibility > 0.4 ? [p[i].x * W, p[i].y * H] : null;
+    ctx.save();
+    ctx.shadowColor = "rgba(90,200,250,.9)"; ctx.shadowBlur = lw * 6;
+    for (const [a, b] of BONES) {
+      const A = P(a), B = P(b);
+      if (!A || !B) continue;
+      const lower = a >= 23;
+      const g = ctx.createLinearGradient(A[0], A[1], B[0], B[1]);
+      g.addColorStop(0, lower ? "rgba(255,255,255,.95)" : "rgba(90,200,250,.9)");
+      g.addColorStop(1, lower && b >= 27 ? "rgba(255,149,0,.95)" : "rgba(255,255,255,.95)");
+      ctx.strokeStyle = g; ctx.lineWidth = lw * (lower ? 2.2 : 1.6);
+      ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.stroke();
+    }
+    ctx.restore();
+    const head = P(0), sl = P(11), sr = P(12);
+    if (head && sl && sr) {
+      const r = Math.hypot(sl[0] - sr[0], sl[1] - sr[1]) * 0.32;
+      ctx.save(); ctx.shadowColor = "rgba(90,200,250,.9)"; ctx.shadowBlur = lw * 6;
+      ctx.strokeStyle = "rgba(255,255,255,.95)"; ctx.lineWidth = lw * 1.6;
+      ctx.beginPath(); ctx.arc(head[0], head[1], r, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    }
+    for (const i of [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 31, 32]) {
+      const J = P(i); if (!J) continue;
+      const foot = i >= 27;
+      ctx.fillStyle = foot ? "#ff9500" : "#fff";
+      ctx.beginPath(); ctx.arc(J[0], J[1], lw * (foot ? 2.6 : 1.8), 0, Math.PI * 2); ctx.fill();
+      if (S.debug && foot && ball && (i === 31 || i === 32)) {
+        ctx.strokeStyle = "rgba(255,149,0,.25)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(J[0], J[1], ball.d * S.contact, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+  }
+
+  // Touch pulse: an expanding ring where the ball was kicked.
+  const age = (now - touchPulse.t) / 500;
+  if (age < 1) {
+    ctx.strokeStyle = `rgba(255,149,0,${1 - age})`; ctx.lineWidth = lw * 3 * (1 - age) + 1;
+    ctx.beginPath(); ctx.arc(touchPulse.x, touchPulse.y, (ball?.d ?? H / 12) * (0.6 + age * 1.6), 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // Ball: a fading comet trail and a glowing ring.
+  for (let i = 1; i < trail.length; i++) {
+    const f = i / trail.length;
+    ctx.strokeStyle = `rgba(255,149,0,${f * .85})`; ctx.lineWidth = lw * (0.5 + 3 * f);
+    ctx.beginPath(); ctx.moveTo(trail[i - 1].x, trail[i - 1].y); ctx.lineTo(trail[i].x, trail[i].y); ctx.stroke();
+  }
+  if (ball && now - lastSeen < 300) {
+    ctx.save(); ctx.shadowColor = "#ff9500"; ctx.shadowBlur = lw * 8;
+    ctx.strokeStyle = "#ff9500"; ctx.lineWidth = lw * 1.8;
+    ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.d * 0.62, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    if (S.debug) {
+      ctx.save(); ctx.translate(ball.x, ball.y - ball.d * 0.85);
+      if (S.facing === "user" && !testSource) ctx.scale(-1, 1);
+      ctx.fillStyle = "#ff9500"; ctx.font = `700 ${Math.round(H / 40)}px -apple-system, system-ui`;
+      ctx.textAlign = "center"; ctx.fillText(Math.round(ball.score * 100) + "%", 0, 0); ctx.restore();
+    }
+  }
+}
+
+// The pose model sometimes "sees" a person in a ball or a wall. Keep a pose
+// only if its legs and torso are confidently there and it's a sensible size.
+function isRealBody(p) {
+  const legs = [23, 24, 25, 26, 27, 28];
+  if (legs.filter((i) => p[i] && p[i].visibility > 0.6).length < 5) return false;
+  const hipY = (p[23].y + p[24].y) / 2, kneeY = (p[25].y + p[26].y) / 2, ankleY = (p[27].y + p[28].y) / 2;
+  const shouldersSeen = p[11].visibility > 0.6 && p[12].visibility > 0.6;
+  const shoulderY = (p[11].y + p[12].y) / 2;
+  return ankleY - hipY > 0.12 && hipY < kneeY && kneeY < ankleY + 0.05 && (!shouldersSeen || shoulderY < hipY);
+}
+
+// The player is the person nearest the ball (bystanders, posters and patterns
+// that look like people stay out of it); with no ball yet, the biggest person.
+function sortPlayers(people, now) {
+  const W = FW(), H = FH();
+  const legs = (p) => [23, 24, 25, 26, 27, 28].map((i) => ({ x: p[i].x * W, y: p[i].y * H }));
+  const size = (p) => { const l = legs(p); return Math.max(...l.map((q) => q.y)) - Math.min(...l.map((q) => q.y)); };
+  const gap = (p) => Math.min(...legs(p).map((q) => Math.hypot(q.x - ball.x, q.y - ball.y)));
+  if (ball && now - lastSeen < 1000) people.sort((a, b) => gap(a) - gap(b));
+  else people.sort((a, b) => size(b) - size(a));
+}
+
+// ---------- Loop ----------
+let lastVideoTime = -1;
+function step(now) {
+  const people = (pose.detectForVideo(src, now).landmarks || []).filter(isRealBody);
+  sortPlayers(people, now);
+  const cands = findCandidates(people, now);
+  const found = pickBall(cands, now);
+  if (found) {
+    // A jump of several ball sizes is a different object: start a fresh path.
+    if (ball && Math.hypot(found.x - ball.x, found.y - ball.y) > ball.d * 4) { trail = []; heights = []; }
+    ball = found; lastSeen = now;
+    trail.push({ x: found.x, y: found.y, t: now });
+    if (trail.length > 20) trail.shift();
+    heights.push({ y: found.y, t: now });
+    while (heights.length && now - heights[0].t > 1200) heights.shift();
+    // The ball's top over the last 3 s, for the knee rule.
+    flight.push({ top: found.y - found.d / 2, t: now });
+    while (flight.length && now - flight[0].t > 3000) flight.shift();
+  } else if (now - lastSeen > 300) {
+    trail = []; heights = [];
+  }
+  detHistory.push(found ? 1 : 0); if (detHistory.length > 60) detHistory.shift();
+  sortPlayers(people, now);
+  judge(now, people);
+  return { people, cands, found };
+}
+
+function loop() {
+  const now = performance.now();
+  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    const { people, cands, found } = step(now);
+    draw(cands, people, now);
+    fpsTimes.push(now); while (fpsTimes.length && now - fpsTimes[0] > 1000) fpsTimes.shift();
+    record(people, cands, found, fpsTimes.length);
+    const rate = detHistory.reduce((a, b) => a + b, 0) / detHistory.length;
+    $("ballchip").textContent = found ? `Ball ${Math.round(found.score * 100)}%` : "Looking for ball";
+    $("ballchip").style.color = found ? "var(--accent)" : "var(--text)";
+    if (S.debug) {
+      $("status").textContent =
+        `${fpsTimes.length} fps · ${S.detector.replace("efficientdet_", "")}\n` +
+        `ball seen ${Math.round(rate * 100)}% of frames\n` +
+        `best guess ${Math.round(100 * Math.max(0, ...cands.map((c) => c.score)))}%\n` +
+        `people ${people.length} · ${phase}${searchBox ? " · zoomed" : ""}`;
+    }
+    const isEnd = eventText.includes("!");
+    $("event").textContent = now - eventTime < (isEnd ? 3000 : 1500) ? eventText : "";
+    $("event").classList.toggle("big", isEnd);
+  }
+  requestAnimationFrame(loop);
+}
+
+// Test mode ?src=clip.mp4&eval=1: steps through the clip and leaves the results
+// in window.evalResult. A hidden tab may stop decoding video, so for automated
+// runs use ?frames=dir/&eval=1 with still frames dir/0001.jpg, 0002.jpg, ...
+// (ffmpeg -i clip.mp4 -q:v 4 dir/%04d.jpg) and &fps= the clip's frame rate.
+const testFrames = new URLSearchParams(location.search).get("frames");
+async function nextFrame(i, fps) {
+  if (!testFrames) {
+    const t = 0.01 + i / fps;
+    if (t >= video.duration) return false;
+    video.currentTime = t;
+    await Promise.race([new Promise((r) => video.addEventListener("seeked", r, { once: true })),
+                        new Promise((r) => setTimeout(r, 2000))]);
+    return true;
+  }
+  // (Image.decode() never finishes in a hidden tab; createImageBitmap does.)
+  const url = `${testFrames}${String(i + 1).padStart(4, "0")}.jpg`;
+  let res;
+  for (let tries = 0; !res; tries++) {
+    try { res = await fetch(url); }
+    catch (e) { if (tries > 5) throw e; await new Promise((r) => setTimeout(r, 1000)); }
+  }
+  if (!res.ok) return false;
+  const img = await createImageBitmap(await res.blob());
+  if (src === video) src = document.createElement("canvas");
+  src.width = img.width; src.height = img.height;
+  const g = src.getContext("2d");
+  // &flip=1: mirror the frames (how a mirrored selfie picture would look).
+  if (params.has("flip")) { g.setTransform(-1, 0, 0, 1, img.width, 0); }
+  g.drawImage(img, 0, 0); g.setTransform(1, 0, 0, 1, 0, 0);
+  img.close();
+  window.evalProgress = i;
+  return true;
+}
+async function evaluate() {
+  const fps = +(new URLSearchParams(location.search).get("fps") || 15);
+  let frames = 0, seen = 0, posed = 0, frozen = 0, scores = [], trace = [], track = [], lastPixels = "";
+  // Count frames identical to the one before (a sign the video stopped decoding).
+  const probe = document.createElement("canvas"); probe.width = 16; probe.height = 9;
+  const probeCtx = probe.getContext("2d", { willReadFrequently: true });
+  for (let i = 0; await nextFrame(i, fps); i++) {
+    probeCtx.drawImage(src, 0, 0, 16, 9);
+    const pixels = probeCtx.getImageData(0, 0, 16, 9).data.join();
+    if (pixels === lastPixels) frozen++;
+    lastPixels = pixels;
+    const { found, people } = step(i * 1000 / fps + 1);
+    if (found) { seen++; scores.push(found.score); }
+    if (people.length) posed++;
+    // Ball height above the ground line, in ball sizes.
+    trace.push(found && groundY != null ? +((groundY - found.y) / found.d).toFixed(1) : null);
+    // Per frame: ball [x, y, size, score%], ground line, and the judged person's feet and hips.
+    const p = people[0], P = (i) => p && p[i].visibility > 0.4 ? [Math.round(p[i].x * FW()), Math.round(p[i].y * FH())] : null;
+    // k: hips, knees, ankles, foot tips, then heels; v: their visibility %; z: depth (x100)
+    const K = [23, 24, 25, 26, 27, 28, 31, 32, 29, 30];
+    track.push({ b: found ? [found.x, found.y, found.d, found.score * 100].map(Math.round) : null, g: groundY && Math.round(groundY),
+      n: people.length, k: p ? K.map(P) : null, v: p ? K.map((i) => Math.round(p[i].visibility * 100)) : null,
+      z: p ? K.map((i) => Math.round(p[i].z * 100)) : null,
+      s: p ? [0, 11, 12].map((i) => [Math.round(p[i].x * FW()), Math.round(p[i].y * FH()), Math.round(p[i].visibility * 100)]) : null });
+    frames++;
+  }
+  window.evalResult = { detector: S.detector, fps, frames, ballFrames: seen, ballRate: +(seen / frames).toFixed(3),
+    poseRate: +(posed / frames).toFixed(3), frozen, medianScore: scores.sort()[Math.floor(scores.length / 2)] ?? null,
+    mode, touches: count, totalTouches, ends, log, trace, track };
+}
+
+// ---------- UI ----------
+$("go").addEventListener("click", async () => {
+  $("go").disabled = true; $("loading").classList.remove("hidden");
+  try {
+    await Promise.all([loadModels(), startCamera()]);
+  } catch (e) {
+    $("loading").textContent = "Couldn't start: " + (e.message || e);
+    $("go").disabled = false;
+    toApp({ type: "error", message: String(e.message || e) });
+    return;
+  }
+  toApp({ type: "ready" });
+  $("start").classList.add("hidden");
+  for (const id of ["topbar", "count", "bottombar"]) $(id).classList.remove("hidden");
+  $("status").classList.toggle("hidden", !S.debug);
+  if ((testSource || testFrames) && new URLSearchParams(location.search).has("eval")) { await evaluate(); return; }
+  requestAnimationFrame(loop);
+});
+$("flip").addEventListener("click", async () => { S.facing = S.facing === "user" ? "environment" : "user"; save(); await startCamera(); });
+$("reset").addEventListener("click", reset);
+$("debug").addEventListener("click", () => { S.debug = !S.debug; save(); $("status").classList.toggle("hidden", !S.debug); });
+$("copyReport").addEventListener("click", async () => {
+  const text = report();
+  try { await navigator.clipboard.writeText(text); $("reportNote").textContent = "Copied. Paste it to Claude."; }
+  catch { $("reportNote").textContent = text; }
+});
+$("clearReport").addEventListener("click", () => { stats = freshStats(); $("reportNote").textContent = "Cleared. Juggle, then copy."; });
+$("settings").addEventListener("click", () => $("sheet").classList.add("open"));
+$("close").addEventListener("click", () => $("sheet").classList.remove("open"));
+if (appMode) $("go").click();
+</script>
+</body>
+</html>
