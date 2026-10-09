@@ -199,7 +199,10 @@ const toApp = (message) => { try { window.webkit?.messageHandlers?.footy?.postMe
 const ONE_FOOT = { rightFoot: { foot: "right", title: "Right Foot Only" }, leftFoot: { foot: "left", title: "Left Foot Only" } };
 const mode = ONE_FOOT[params.get("mode")] ? params.get("mode") : "classic";
 const oneFoot = ONE_FOOT[mode] ?? null;
-if (oneFoot) { $("modechip").textContent = oneFoot.title; $("modechip").classList.remove("hidden"); }
+if (oneFoot) {
+  $("modechip").textContent = oneFoot.title; $("modechip").classList.remove("hidden");
+  document.querySelector("#start h1").textContent = oneFoot.title;
+}
 if (appMode) {
   S.facing = params.get("facing") === "user" ? "user" : "environment";
   S.debug = params.has("debug");
