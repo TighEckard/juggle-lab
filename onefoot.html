@@ -203,6 +203,11 @@ for (const key of ["handsFoul", "upperBody", "aboveKnees", "showAll"]) {
   $(key).checked = S[key];
   $(key).addEventListener("change", () => { S[key] = $(key).checked; save(); });
 }
+// Test switches: &det=lite2 (the bigger ball detector), &min=0.06 (confidence bar).
+{ const q = new URLSearchParams(location.search);
+  if (q.get("det") === "lite2") S.detector = "efficientdet_lite2";
+  if (q.get("det") === "lite0") S.detector = "efficientdet_lite0";
+  if (q.has("min")) S.minScore = +q.get("min"); }
 $("detector").value = S.detector;
 $("detector").addEventListener("change", async () => { S.detector = $("detector").value; save(); await loadDetector(); });
 
@@ -317,14 +322,21 @@ function zoomRegion(people, now) {
   return { x, y, w: Math.min(side, W), h: Math.min(side, H) };
 }
 
+// Test: &enh=1|2|3 brightens / adds contrast to what the ball detector sees (backlit balls).
+const ENHANCE = { "0": "none", "1": "brightness(1.5) contrast(1.3)", "2": "contrast(1.8)", "3": "brightness(1.8) contrast(1.6)" };
 function detectIn(region) {
   const W = FW(), H = FH();
   const size = S.detector === "efficientdet_lite2" ? 448 : 320;
   let source = src, sx = 0, sy = 0, scale = 1;
+  const enh = ENHANCE[new URLSearchParams(location.search).get("enh") || "0"];
   if (region) {
     crop.width = size; crop.height = size;
-    cropCtx.drawImage(src, region.x, region.y, region.w, region.h, 0, 0, size, size);
+    cropCtx.filter = enh; cropCtx.drawImage(src, region.x, region.y, region.w, region.h, 0, 0, size, size); cropCtx.filter = "none";
     source = crop; sx = region.x; sy = region.y; scale = region.w / size;
+  } else if (enh !== "none") {
+    crop.width = W; crop.height = H;
+    cropCtx.filter = enh; cropCtx.drawImage(src, 0, 0); cropCtx.filter = "none";
+    source = crop;
   }
   detectorClock += 1;
   return detector.detectForVideo(source, detectorClock).detections.map((d) => {
@@ -348,6 +360,7 @@ function findCandidates(people, now) {
 // One ball. Anything at or above the confidence bar counts. Once the ball is
 // locked, much fainter detections still count if they're right where the
 // ball should be (a plain background makes those reliable).
+const FAINT = 0.02;   // very faint detections (2%+) count only right on the ball's predicted path (backlit balls); &faint=0 turns it off
 function pickBall(cands, now) {
   if (ball && now - lastSeen < 500) {
     // Faint detections only right next to the ball; confident ones a bit further.
@@ -358,6 +371,20 @@ function pickBall(cands, now) {
     // a few sizes away doesn't steal the track.
     const cost = (c) => Math.hypot(c.x - ball.x, c.y - ball.y) / ball.d - 2 * c.score;
     if (near.length) return near.sort((a, b) => cost(a) - cost(b))[0];
+    // Very faint (2-5%, e.g. a backlit ball against the sky): only right where
+    // the ball's flight says it should be now, and the same size.
+    const faint = +(new URLSearchParams(location.search).get("faint") || FAINT);
+    // (Not when a confident ball shows up elsewhere, and only while the ball is
+    // flying: a faint smudge that stands still is not the ball.)
+    const moving = trail.length >= 3 && Math.hypot(trail.at(-1).x - trail.at(-3).x, trail.at(-1).y - trail.at(-3).y) > ball.d * 0.3;
+    const sureElsewhere = cands.some((c) => c.score >= S.minScore);
+    if (faint > 0 && trail.length >= 2 && moving && !sureElsewhere) {
+      const a = trail.at(-2), b = trail.at(-1), dt = Math.max(1, b.t - a.t);
+      const px = b.x + (b.x - a.x) / dt * (now - b.t), py = b.y + (b.y - a.y) / dt * (now - b.t);
+      const fits = cands.filter((c) => c.score >= faint && c.d > ball.d * 0.7 && c.d < ball.d * 1.4
+        && Math.hypot(c.x - px, c.y - py) < ball.d * 1.0);
+      if (fits.length) return fits.sort((p1, p2) => Math.hypot(p1.x - px, p1.y - py) - Math.hypot(p2.x - px, p2.y - py))[0];
+    }
   }
   const sure = cands.filter((c) => c.score >= S.minScore);
   return sure.length ? sure.sort((a, b) => b.score - a.score)[0] : null;
@@ -1151,6 +1178,7 @@ async function evaluate() {
     if (pixels === lastPixels) frozen++;
     lastPixels = pixels;
     const { found, people, cands } = step(i * 1000 / fps + 1);
+    const box = searchBox ? [searchBox.x, searchBox.y, searchBox.w].map(Math.round) : null;
     if (found) { seen++; scores.push(found.score); }
     if (people.length) posed++;
     // Ball height above the ground line, in ball sizes.
@@ -1163,7 +1191,7 @@ async function evaluate() {
       n: people.length, k: p ? K.map(P) : null, v: p ? K.map((i) => Math.round(p[i].visibility * 100)) : null,
       z: p ? K.map((i) => Math.round(p[i].z * 100)) : null,
       s: p ? [0, 11, 12].map((i) => [Math.round(p[i].x * FW()), Math.round(p[i].y * FH()), Math.round(p[i].visibility * 100)]) : null,
-      c: cands.filter((c) => c.score >= 0.25).map((c) => [c.x, c.y, c.d, c.score * 100].map(Math.round)) });
+      sb: box, c: cands.filter((c) => c.score >= 0.03).map((c) => [c.x, c.y, c.d, c.score * 100].map(Math.round)) });
     frames++;
   }
   window.evalResult = { detector: S.detector, fps, frames, ballFrames: seen, ballRate: +(seen / frames).toFixed(3),
