@@ -719,7 +719,7 @@ function judge(now, people) {
   // Near the floor (within about a ball of the feet), a ball glancing off a
   // leg on its way down only pops up a little: a touch there has to lift it
   // at least half a ball.
-  const rej = (why) => log.push({ t: +(turn.t / 1000).toFixed(2), rej: why });
+  const rej = (why) => log.push({ t: +(turn.t / 1000).toFixed(2), rej: why, fell: +turn.fell.toFixed(2), rose: +turn.rose.toFixed(2), off: groundY == null ? null : +((turn.y + ball.d / 2 - groundY) / ball.d).toFixed(2) });
   if (turn && p && turn.t - lastTouch > S.cooldown && ((onFloor && turn.rose < 1) || bobbing)) rej(bobbing ? "bobbing" : "onFloor");
   if (turn && p && turn.t - lastTouch > S.cooldown && (!onFloor || turn.rose >= 1) && !bobbing) {
     // In or near a hand lately: carried, not juggled.
