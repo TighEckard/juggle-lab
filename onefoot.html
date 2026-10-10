@@ -252,8 +252,13 @@ const toApp = (message) => { try { window.webkit?.messageHandlers?.footy?.postMe
 // count, a touch with the other foot ends the run, and thigh or head touches
 // don't count (and don't end it).
 const ONE_FOOT = { rightFoot: { foot: "right", title: "Right Foot Only" }, leftFoot: { foot: "left", title: "Left Foot Only" } };
-const mode = ONE_FOOT[params.get("mode")] ? params.get("mode") : "classic";
+// Trick mode ?mode=atw: counts "around the world" tricks (a foot circling over
+// the ball while it's in the air) during a juggling run, instead of touches.
+// Every mode runs on the same tracking, ground and hand checks and endings.
+const atwMode = params.get("mode") === "atw";
+const mode = ONE_FOOT[params.get("mode")] ? params.get("mode") : atwMode ? "atw" : "classic";
 const oneFoot = ONE_FOOT[mode] ?? null;
+if (atwMode) { $("modepill").textContent = "Around the World"; $("modepill").classList.remove("hidden"); document.querySelector("#start h1").textContent = "Around the World"; }
 if (oneFoot) {
   $("modepill").textContent = oneFoot.title; $("modepill").classList.remove("hidden");
   document.querySelector("#start h1").textContent = oneFoot.title;
@@ -290,7 +295,7 @@ let groundSince = null, totalTouches = 0, ends = 0;
 let count = 0, lastTouch = 0, phase = "ready", groundY = null, groundFrames = 0;
 let fpsTimes = [], log = [];   // test mode: what happened when
 let poses = [];   // the player's pose over the last half second, for telling the feet apart
-let seenLog = [];   // was the player seen, frame by frame, over the last second
+let seenLog = [], holdingNow = false, heldStreak = 0;   // was the player seen, frame by frame, over the last second
 let footLows = [], floorSamples = [], floorOff = 0;   // ground line from the standing foot; the floor where the ball is
 
 // ---------- Ball search ----------
@@ -300,7 +305,7 @@ let footLows = [], floorSamples = [], floorOff = 0;   // ground line from the st
 // last spot), and check the whole frame every few frames.
 const crop = document.createElement("canvas");
 const cropCtx = crop.getContext("2d", { willReadFrequently: false });
-let detectorClock = 0, frameIndex = 0, searchBox = null;
+let detectorClock = 0, frameIndex = 0, searchBox = null, ballSizes = [];
 
 function zoomRegion(people, now) {
   const W = FW(), H = FH(), p = people[0];
@@ -327,12 +332,17 @@ const ENHANCE = { "0": "none", "1": "brightness(1.5) contrast(1.3)", "2": "contr
 function detectIn(region) {
   const W = FW(), H = FH();
   const size = S.detector === "efficientdet_lite2" ? 448 : 320;
-  let source = src, sx = 0, sy = 0, scale = 1;
+  let source = src, sx = 0, sy = 0, scale = 1, scaleY = 1;
   const enh = ENHANCE[new URLSearchParams(location.search).get("enh") || "0"];
   if (region) {
+    // The region is drawn into the square without stretching it (a tall region
+    // in a portrait picture is padded at the sides), so ball shapes and
+    // positions stay true.
     crop.width = size; crop.height = size;
-    cropCtx.filter = enh; cropCtx.drawImage(src, region.x, region.y, region.w, region.h, 0, 0, size, size); cropCtx.filter = "none";
-    source = crop; sx = region.x; sy = region.y; scale = region.w / size;
+    const k = size / Math.max(region.w, region.h), ox = (size - region.w * k) / 2, oy = (size - region.h * k) / 2;
+    cropCtx.fillStyle = "#808080"; cropCtx.fillRect(0, 0, size, size);
+    cropCtx.filter = enh; cropCtx.drawImage(src, region.x, region.y, region.w, region.h, ox, oy, region.w * k, region.h * k); cropCtx.filter = "none";
+    source = crop; sx = region.x - ox / k; sy = region.y - oy / k; scale = scaleY = 1 / k;
   } else if (enh !== "none") {
     crop.width = W; crop.height = H;
     cropCtx.filter = enh; cropCtx.drawImage(src, 0, 0); cropCtx.filter = "none";
@@ -341,8 +351,8 @@ function detectIn(region) {
   detectorClock += 1;
   return detector.detectForVideo(source, detectorClock).detections.map((d) => {
     const b = d.boundingBox;
-    const box = { originX: sx + b.originX * scale, originY: sy + b.originY * scale,
-                  width: b.width * scale, height: b.height * scale };
+    const box = { originX: sx + b.originX * scale, originY: sy + b.originY * scaleY,
+                  width: b.width * scale, height: b.height * scaleY };
     return { x: box.originX + box.width / 2, y: box.originY + box.height / 2,
              d: (box.width + box.height) / 2, score: d.categories[0].score, box };
   });
@@ -362,6 +372,16 @@ function findCandidates(people, now) {
 // ball should be (a plain background makes those reliable).
 const FAINT = 0.02;   // very faint detections (2%+) count only right on the ball's predicted path (backlit balls); &faint=0 turns it off
 function pickBall(cands, now) {
+  // The ball keeps its size (over two seconds it hardly changes), so a hand, a
+  // shoe or a shorts logo the detector takes for a ball, often while a leg or a
+  // hand covers the real one, doesn't take over the track.
+  {
+    while (ballSizes.length && now - ballSizes[0].t > 2000) ballSizes.shift();
+    if (ballSizes.length >= 5) {
+      const sizes = ballSizes.map((b) => b.d).sort((a, b) => a - b), d = sizes[sizes.length >> 1];
+      cands = cands.filter((c) => c.d > d * 0.7 && c.d < d * 1.4);
+    }
+  }
   if (ball && now - lastSeen < 500) {
     // Faint detections only right next to the ball; confident ones a bit further.
     const near = cands.filter((c) => c.score >= Math.min(0.05, S.minScore) && c.d > ball.d * 0.6 && c.d < ball.d * 1.6
@@ -576,6 +596,31 @@ function bounced(turn) {
   return null;
 }
 
+// Held over the last `ms` before `at`: a hand on the ball most of the time,
+// or the ball near the hands and going wherever they go (measured over the
+// whole stretch, so the ball's box jiggling behind the fingers doesn't hide it).
+function heldForAt(ms, at) {
+  const r = inHand.filter((h) => at - h.t < ms && h.t <= at);
+  // Enough of the stretch seen to judge (a ball lost behind fingers for a few
+  // frames doesn't let a short sample decide).
+  if (r.length < 5 || r.at(-1).t - r[0].t < ms * 0.6 || at - r.at(-1).t > 100) return false;
+  const span = (pts) => { let m = 0; for (const a of pts) for (const b of pts) m = Math.max(m, Math.hypot(a.x - b.x, a.y - b.y)); return m; };
+  const near = r.filter((h) => h.sides[0] || h.sides[1]);
+  const mid = (h) => { const s2 = h.sides.filter(Boolean); return { x: s2.reduce((a, q) => a + q.x, 0) / s2.length, y: s2.reduce((a, q) => a + q.y, 0) / s2.length }; };
+  const ballSpan = span(near.map((h) => ({ x: h.bx, y: h.by })));
+  // A hand on the ball nearly all the time, at a steady distance, and either
+  // the ball resting in it or the hand going along with the ball (a ball flying
+  // past a hanging hand changes distance fast and the hand stays put).
+  const gaps = r.map((h) => h.gap);
+  if (r.filter((h) => h.on).length >= r.length * 0.8 && Math.max(...gaps) - Math.min(...gaps) < 0.8
+    && (ballSpan < ball.d * 0.3 || span(near.map(mid)) >= ballSpan * 0.5)) return true;
+  // Or the ball near the hands and going wherever they go (measured over the
+  // whole stretch, so the ball's box jiggling behind the fingers doesn't hide it).
+  if (near.length < r.length * 0.8) return false;
+  const relSpan = span(near.map((h) => { const m = mid(h); return { x: h.bx - m.x, y: h.by - m.y }; }));
+  return relSpan < ballSpan * 0.5 || ballSpan < ball.d * 0.3;
+}
+
 function judge(now, people) {
   const p = people[0];
   const W = FW(), H = FH();
@@ -607,26 +652,23 @@ function judge(now, people) {
   // moving it up and down is never a juggle, and holding it during a run ends
   // the run. (A ball juggled past a hanging hand moves on its own while the
   // hand stays put.)
-  const hands = [[15, 17, 19], [16, 18, 20]].map((ids) => ids.map(pt).filter(Boolean))
-    .filter((h) => h.length).map((h) => ({ x: h.reduce((s, q) => s + q.x, 0) / h.length, y: h.reduce((s, q) => s + q.y, 0) / h.length }));
-  const holdHand = hands.sort((a, b) => Math.hypot(a.x - ball.x, a.y - ball.y) - Math.hypot(b.x - ball.x, b.y - ball.y))[0];
-  const near = !!holdHand && now - lastSeen < 60 && Math.hypot(holdHand.x - ball.x, holdHand.y - ball.y) < unit() * 1.5;
-  inHand.push({ t: now, near, bx: ball.x, by: ball.y, hand: near ? holdHand : null });
-  while (inHand.length && now - inHand[0].t > 1000) inHand.shift();
-  const heldFor = (ms) => {
-    const r = inHand.filter((h) => now - h.t < ms);
-    if (r.length < 5 || r.filter((h) => h.near).length < r.length * 0.8) return false;
-    let path = 0, apart = 0;
-    for (let k = 1; k < r.length; k++) {
-      const a = r[k - 1], b = r[k];
-      if (!a.hand || !b.hand) continue;
-      path += Math.hypot(b.bx - a.bx, b.by - a.by);
-      apart += Math.hypot((b.bx - a.bx) - (b.hand.x - a.hand.x), (b.by - a.by) - (b.hand.y - a.hand.y));
-    }
-    // Moving with the hand, or resting in it.
-    return apart < path * 0.4 || path < ball.d * 0.3;
-  };
-  if (phase === "live" && heldFor(700)) { end("Hand!", { x: ball.x, y: ball.y }); return; }
+  // Each hand (wrist, pinky and index knuckles) followed on its own: holding
+  // the ball in two hands, the nearer one flips from frame to frame.
+  const handAt = (ids) => { const q = ids.map(pt).filter(Boolean); return q.length ? { x: q.reduce((s, v) => s + v.x, 0) / q.length, y: q.reduce((s, v) => s + v.y, 0) / q.length } : null; };
+  const seenNow = now - lastSeen < 60, reachHand = unit() * 1.5;
+  const both = [handAt([15, 17, 19]), handAt([16, 18, 20])];
+  const sides = both.map((h) => h && seenNow && Math.hypot(h.x - ball.x, h.y - ball.y) < reachHand ? h : null);
+  // On the ball: a hand right at it (closer than its edge plus a bit).
+  const gaps = both.map((h) => h && seenNow ? Math.hypot(h.x - ball.x, h.y - ball.y) / unit() : 9);
+  const onBall = Math.min(...gaps) < 0.85;
+  inHand.push({ t: now, near: !!(sides[0] || sides[1]), on: onBall, gap: Math.min(...gaps), bx: ball.x, by: ball.y, sides });
+  while (inHand.length && now - inHand[0].t > 1200) inHand.shift();
+  const heldFor = (ms) => heldForAt(ms, now);
+  holdingNow = heldFor(400);
+  // Held for 0.7 s, three frames running (a ball flying past a hand can look
+  // held for a frame or two): the run ends.
+  heldStreak = heldFor(700) ? heldStreak + 1 : 0;
+  if (phase === "live" && heldStreak >= 3) { end("Hand!", { x: ball.x, y: ball.y }); return; }
 
   // Touch: the ball fell, bottomed out, and is going back up, and its lowest
   // point was within reach of a foot (or knee/head). Hovering near a foot
@@ -712,15 +754,18 @@ function judge(now, people) {
       // most of the last half second), not from a ball rolled down an arm by
       // someone standing too close.
       if (phase !== "live") {
+        // ...and not straight out of the hands: held at any moment in the 0.6 s
+        // before the touch means it was carried there.
+        if (inHand.some((h) => h.t > turn.t - 600 && h.t <= turn.t + 50 && heldForAt(600, h.t))) { log.push({ ...at, skip: "fromHands" }); return; }
         const recent = seenLog.filter((q) => now - q.t < 600);
         if (recent.length < 4 || recent.filter((q) => q.seen).length < recent.length * 0.7) { log.push({ ...at, skip: "notInView" }); return; }
-        phase = "live"; count = 0; toApp({ type: "start", mode });
+        phase = "live"; count = 0; atwCount = 0; toApp({ type: "start", mode });
       }
       count += 1; totalTouches += 1; stats.touches++;
       toApp({ type: "touch", count, part, time: turn.t / 1000,
         height: Number.isFinite(highest) ? Math.max(0, (turn.y - ball.d / 2 - highest) / ball.d) : null });
       log.push({ ...at, touch: count, by: body < reach ? "part" : "legs", raw: named[0]?.part ?? null });
-      setCount(count, true);
+      setCount(atwMode ? atwCount : count, !atwMode);
       hideEnd();
       navigator.vibrate?.(15);
       effect("touch", turn.x, turn.y);
@@ -750,12 +795,13 @@ function judge(now, people) {
 }
 
 function end(reason, where) {
+  if (atwMode) flushAtw();
   phase = "ended"; ends += 1; groundSince = null;
   stats.ends[reason] = (stats.ends[reason] || 0) + 1;
   log.push({ t: +(lastSeen / 1000).toFixed(2), end: reason, count });
-  showEnd(reason, count, where);
+  showEnd(reason, atwMode ? atwCount : count, where);
   const reasons = { "Ground!": "drop", "Hand!": "hand", "Out of view!": "lost", "Stopped!": "stopped", "Wrong Foot!": "wrongFoot" };
-  toApp({ type: "end", reason: reasons[reason] ?? "drop", count });
+  toApp({ type: "end", reason: reasons[reason] ?? "drop", count, ...(atwMode ? { atw: atwCount } : {}) });
   // In the app one run is one session; on the web, go again once the banner is gone.
   if (!appMode) setTimeout(() => { if (phase === "ended") { phase = "ready"; setCount(count); } }, 2600);
 }
@@ -804,7 +850,7 @@ function updateHint(now) {
 }
 const ENDS = {
   "Ground!": { kicker: "It hit the floor", title: "Ground!", cls: "ground" },
-  "Hand!": { kicker: "Handball", title: "Hand!", cls: "hand" },
+  "Hand!": { kicker: "Ball in your hands", title: "Hands!", cls: "hand" },
   "Wrong Foot!": { kicker: oneFoot ? oneFoot.title : "", title: "Wrong Foot!", cls: "wrong" },
   "Out of view!": { kicker: "Lost the ball", title: "Out of View", cls: "lost" },
   "Stopped!": { kicker: "", title: "Stopped", cls: "stopped" },
@@ -826,17 +872,107 @@ function showEnd(reason, n, where) {
 }
 function hideEnd() { $("banner").className = ""; }
 
+
+// ---------- Around the World (trick-mode layer on the shared core) ----------
+// The foot goes over the ball while it's in the air. Each frame is judged
+// 0.45 s late, so when the detector loses the ball while the leg circles it
+// (blur, the leg in front), its spot can be filled in from its flight before
+// and after (a gravity curve through the nearby sightings). A frame counts as
+// "foot over the ball" during a juggling run, with the ball not held, up at
+// least 30% of a leg above the lowest foot, within the player's leg reach and
+// moving at least 0.3 ball sizes in the last 0.6 s, when a foot point (ankle,
+// heel or toe) lifted at least 55% of a leg is more than 0.3 ball sizes above
+// the ball's center and within 1.6 to either side. A new trick once the foot
+// has been off the top of the ball for 0.2 s.
+let atwCount = 0, atwTotal = 0, lastOver = -1e9, atwBuf = [];
+const ATW_LEGS = [["left", [27, 29, 31]], ["right", [28, 30, 32]]];
+const ATW_DELAY = 450;
+function judgeAtw(now, people, found) {
+  atwBuf.push({ t: now, ball: found ? { x: found.x, y: found.y, d: found.d } : null, p: people[0] || null,
+    live: phase === "live", held: ball ? heldForAt(400, now) : false });
+  while (atwBuf.length && now - atwBuf[0].t > ATW_DELAY + 1500) atwBuf.shift();
+  for (let k = 0; k < atwBuf.length && now - atwBuf[k].t >= ATW_DELAY; k++) if (!atwBuf[k].done) judgeAtwFrame(k);
+}
+// At the end of a run, judge the frames still waiting.
+function flushAtw() { for (let k = 0; k < atwBuf.length; k++) if (!atwBuf[k].done) judgeAtwFrame(k); }
+function fillBall(k) {
+  const buf = atwBuf, h = buf[k];
+  if (h.ball) return h.ball;
+  let a = k - 1, b = k + 1;
+  while (a >= 0 && !buf[a].ball) a--;
+  while (b < buf.length && !buf[b].ball) b++;
+  if (a < 0 || b >= buf.length || buf[b].t - buf[a].t > 450) return null;
+  const A = buf[a].ball, B = buf[b].ball;
+  if (Math.hypot(A.x - B.x, A.y - B.y) > 4 * A.d) return null;
+  const f = (h.t - buf[a].t) / (buf[b].t - buf[a].t);
+  const fill = { x: A.x + (B.x - A.x) * f, y: A.y + (B.y - A.y) * f, d: A.d + (B.d - A.d) * f };
+  const pts = buf.slice(Math.max(0, a - 6), a + 1).filter((q) => q.ball).slice(-3)
+    .concat(buf.slice(b, b + 7).filter((q) => q.ball).slice(0, 3));
+  if (pts.length >= 3) {
+    // Least-squares parabola y = c0 + c1 u + c2 u^2 through the sightings.
+    const t0 = pts[0].t, S2 = [0, 0, 0, 0, 0], Y = [0, 0, 0];
+    for (const q of pts) {
+      const u = q.t - t0;
+      for (let i = 0; i < 5; i++) S2[i] += u ** i;
+      for (let i = 0; i < 3; i++) Y[i] += q.ball.y * u ** i;
+    }
+    const M = [[S2[0], S2[1], S2[2]], [S2[1], S2[2], S2[3]], [S2[2], S2[3], S2[4]]];
+    const det = (m) => m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+      + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    const D = det(M);
+    if (Math.abs(D) > 1e-9) {
+      const c = [0, 1, 2].map((j) => det(M.map((row, i) => row.map((v, col) => (col === j ? Y[i] : v)))) / D);
+      const u = h.t - t0;
+      fill.y = c[0] + c[1] * u + c[2] * u * u;
+    }
+  }
+  return fill;
+}
+function judgeAtwFrame(k) {
+  const h = atwBuf[k]; h.done = true;
+  const b = fillBall(k); h.fb = b;
+  const p = h.p, now = h.t;
+  if (!h.live || !p || !b || h.held) return;
+  const W = FW(), H = FH();
+  const pt = (i) => p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null;
+  const tops = atwBuf.slice(0, k + 1).filter((q) => q.fb && now - q.t < 600).map((q) => q.fb.y - q.fb.d / 2);
+  if (tops.length < 3 || Math.max(...tops) - Math.min(...tops) < b.d * 0.3) return;
+  const hips = [23, 24].map(pt).filter(Boolean), ankles = [27, 28].map(pt).filter(Boolean);
+  if (!hips.length || !ankles.length) return;
+  const hip = { x: hips.reduce((s, q) => s + q.x, 0) / hips.length, y: hips.reduce((s, q) => s + q.y, 0) / hips.length };
+  const legLength = Math.max(...ankles.map((q) => q.y)) - hip.y;
+  if (legLength <= 0 || Math.hypot(b.x - hip.x, b.y - hip.y) > legLength * 1.3) return;
+  const lowest = Math.max(...FOOT.map(pt).filter(Boolean).map((q) => q.y)), leg = lowest - hip.y;
+  if (lowest - b.y < leg * 0.3) return;
+  const over = ATW_LEGS.filter(([, ids]) => ids.map(pt).some((f) => f && b.y - f.y > b.d * 0.3
+    && Math.abs(f.x - b.x) < b.d * 1.6 && lowest - f.y >= leg * 0.55)).map(([side]) => side);
+  if (!over.length) return;
+  if (now - lastOver > 200) {
+    atwCount += 1; atwTotal += 1;
+    toApp({ type: "atw", count: atwCount, leg: over[0], time: now / 1000 });
+    log.push({ t: +(now / 1000).toFixed(2), atw: atwCount, leg: over[0] });
+    if (phase === "live") {
+      setCount(atwCount, true);
+      navigator.vibrate?.(25);
+      effect("touch", b.x, b.y);
+      flashHint("Around the World!");
+    }
+  }
+  lastOver = now;
+}
+
 // Called by the app.
 window.footy = {
   stop() { if (phase !== "ended") end("Stopped!"); },
   async flip() { S.facing = S.facing === "user" ? "environment" : "user"; await startCamera(); },
 };
 
-function reset() { count = 0; phase = "ready"; lastTouch = 0; setCount(0); hideEnd(); }
+function reset() { count = 0; atwCount = 0; phase = "ready"; lastTouch = 0; setCount(0); hideEnd(); }
 
 // ---------- Drawing ----------
 const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
-  [23, 25], [25, 27], [27, 29], [29, 31], [27, 31], [24, 26], [26, 28], [28, 30], [30, 32], [28, 32]];
+  [23, 25], [25, 27], [27, 29], [29, 31], [27, 31], [24, 26], [26, 28], [28, 30], [30, 32], [28, 32],
+  [15, 17], [15, 19], [17, 19], [15, 21], [16, 18], [16, 20], [18, 20], [16, 22]];   // hands
 // Short-lived effects drawn over the video: a touch spark, a ground impact, a
 // wrong-foot cross. Timed on the real clock so they play smoothly in tests too.
 let effects = [];
@@ -949,6 +1085,16 @@ function draw(cands, people, now) {
       ctx.strokeStyle = "rgba(255,255,255,.95)"; ctx.lineWidth = lw * 1.6;
       ctx.beginPath(); ctx.arc(head[0], head[1], r, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
     }
+    // Hands: a ring at each hand, bright orange while a hand is on the ball.
+    for (const ids of [[15, 17, 19, 21], [16, 18, 20, 22]]) {
+      const q = ids.map(P).filter(Boolean);
+      if (q.length < 2) continue;
+      const hx = q.reduce((a, v) => a + v[0], 0) / q.length, hy = q.reduce((a, v) => a + v[1], 0) / q.length;
+      ctx.save();
+      ctx.strokeStyle = holdingNow ? "#ff9500" : "rgba(255,255,255,.9)"; ctx.lineWidth = lw * (holdingNow ? 2.4 : 1.4);
+      if (holdingNow) { ctx.shadowColor = "#ff9500"; ctx.shadowBlur = lw * 10; }
+      ctx.beginPath(); ctx.arc(hx, hy, lw * 5, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    }
     for (const i of [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 31, 32]) {
       const J = P(i); if (!J) continue;
       const foot = i >= 27;
@@ -988,7 +1134,9 @@ function draw(cands, people, now) {
 function isRealBody(p) {
   const legs = [23, 24, 25, 26, 27, 28];
   if (legs.filter((i) => p[i] && p[i].visibility > 0.6).length < 5) return false;
-  const hipY = (p[23].y + p[24].y) / 2, kneeY = (p[25].y + p[26].y) / 2, ankleY = (p[27].y + p[28].y) / 2;
+  let hipY = (p[23].y + p[24].y) / 2, kneeY = (p[25].y + p[26].y) / 2, ankleY = (p[27].y + p[28].y) / 2;
+  // In trick mode one leg is often lifted above the knee: judge the standing leg.
+  if (atwMode) [kneeY, ankleY] = p[27].y > p[28].y ? [p[25].y, p[27].y] : [p[26].y, p[28].y];
   const shouldersSeen = p[11].visibility > 0.6 && p[12].visibility > 0.6;
   const shoulderY = (p[11].y + p[12].y) / 2;
   return ankleY - hipY > 0.12 && hipY < kneeY && kneeY < ankleY + 0.05 && (!shouldersSeen || shoulderY < hipY);
@@ -1010,7 +1158,7 @@ let lastVideoTime = -1;
 // The pose model loses a small or blurred player for a frame or two now and
 // then; the last pose stands in for up to 0.2 s (marked stale, so the bounce
 // check, which needs the feet right at that moment, doesn't use it).
-let lastPeople = { t: -1e9, people: [] }, poseFresh = true;
+let lastPeople = { t: -1e9, people: [] }, poseFresh = true, rawPeople = [];
 const zoomCanvas = document.createElement("canvas"), zoomCtx = zoomCanvas.getContext("2d");
 // A far-away player is only a few dozen pixels tall and the pose model often
 // misses them. When the player was small (or just lost), look again at a
@@ -1034,7 +1182,8 @@ function zoomedPose(now) {
   return isRealBody(mapped) ? mapped : null;
 }
 function step(now) {
-  let people = (pose.detectForVideo(src, now).landmarks || []).filter(isRealBody);
+  rawPeople = pose.detectForVideo(src, now).landmarks || [];
+  let people = rawPeople.filter(isRealBody);
   // Small or just lost: try the zoomed look (it sees a small player's feet much better).
   const z = zoomedPose(now);
   if (z && (!people.length || people.every((p) => Math.hypot(p[23].x - z[23].x, p[23].y - z[23].y) < 0.05))) people = [z, ...people.slice(1)];
@@ -1049,6 +1198,7 @@ function step(now) {
     // A jump of several ball sizes is a different object: start a fresh path.
     if (ball && Math.hypot(found.x - ball.x, found.y - ball.y) > ball.d * 4) { trail = []; heights = []; }
     ball = found; lastSeen = now;
+    if (found.score >= S.minScore) ballSizes.push({ d: found.d, t: now });
     trail.push({ x: found.x, y: found.y, t: now });
     if (trail.length > 20) trail.shift();
     heights.push({ y: found.y, t: now });
@@ -1062,6 +1212,7 @@ function step(now) {
   detHistory.push(found ? 1 : 0); if (detHistory.length > 60) detHistory.shift();
   sortPlayers(people, now);
   judge(now, people);
+  if (atwMode) judgeAtw(now, people, found);
   return { people, cands, found };
 }
 
@@ -1186,17 +1337,20 @@ async function evaluate() {
     // Per frame: ball [x, y, size, score%], ground line, and the judged person's feet and hips.
     const p = people[0], P = (i) => p && p[i].visibility > 0.4 ? [Math.round(p[i].x * FW()), Math.round(p[i].y * FH())] : null;
     // k: hips, knees, ankles, foot tips, then heels; v: their visibility %; z: depth (x100)
-    const K = [23, 24, 25, 26, 27, 28, 31, 32, 29, 30];
+    const K = [23, 24, 25, 26, 27, 28, 31, 32, 29, 30, 15, 16];
     track.push({ b: found ? [found.x, found.y, found.d, found.score * 100].map(Math.round) : null, g: groundY && Math.round(groundY),
       n: people.length, k: p ? K.map(P) : null, v: p ? K.map((i) => Math.round(p[i].visibility * 100)) : null,
       z: p ? K.map((i) => Math.round(p[i].z * 100)) : null,
       s: p ? [0, 11, 12].map((i) => [Math.round(p[i].x * FW()), Math.round(p[i].y * FH()), Math.round(p[i].visibility * 100)]) : null,
+      h: ball && heldForAt(400, i * 1000 / fps + 1) ? 1 : 0,
+      r: rawPeople.map((q) => [23, 24, 25, 26, 27, 28, 31, 32, 29, 30, 15, 16, 11, 12].map((j) => [Math.round(q[j].x * FW()), Math.round(q[j].y * FH()), Math.round(q[j].visibility * 100)])),
+      hands: p ? [15, 16, 17, 18, 19, 20].map((i) => [Math.round(p[i].x * FW()), Math.round(p[i].y * FH()), Math.round(p[i].visibility * 100)]) : null,
       sb: box, c: cands.filter((c) => c.score >= 0.03).map((c) => [c.x, c.y, c.d, c.score * 100].map(Math.round)) });
     frames++;
   }
   window.evalResult = { detector: S.detector, fps, frames, ballFrames: seen, ballRate: +(seen / frames).toFixed(3),
     poseRate: +(posed / frames).toFixed(3), frozen, medianScore: scores.sort()[Math.floor(scores.length / 2)] ?? null,
-    mode, touches: count, totalTouches, ends, log, trace, track };
+    mode, touches: count, totalTouches, atw: atwTotal, ends, log, trace, track };
 }
 
 // ---------- UI ----------
