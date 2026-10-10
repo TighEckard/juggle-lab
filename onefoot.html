@@ -31,13 +31,54 @@
   .btn { border: 0; color: var(--text); background: var(--chip); backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px); border-radius: 999px; min-width: 44px; height: 44px;
     padding: 0 14px; font: 600 15px -apple-system, system-ui, sans-serif; }
-  #count { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 54px); left: 0; right: 0;
-    text-align: center; font: 800 120px/1 -apple-system, "SF Pro Rounded", system-ui, sans-serif;
-    text-shadow: 0 4px 24px rgba(0,0,0,.6); font-variant-numeric: tabular-nums; pointer-events: none; }
-  #event.big { font-size: 36px; color: #fff; }
-  #event { position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 190px); left: 0; right: 0;
-    text-align: center; font-weight: 700; font-size: 20px; color: var(--accent); min-height: 26px;
-    text-shadow: 0 2px 10px rgba(0,0,0,.7); pointer-events: none; }
+  /* HUD: mode pill, the count, a one-line hint. Centered at the top, clear of the
+     app's own Close (top left) and camera (top right) buttons. */
+  #hud { position: fixed; left: 0; right: 0; top: calc(max(12px, env(safe-area-inset-top)) + 60px);
+    display: flex; flex-direction: column; align-items: center; gap: 2px; pointer-events: none; }
+  .app #hud { top: calc(max(12px, env(safe-area-inset-top)) + 6px); }
+  #modepill { font: 800 13px/1 -apple-system, system-ui, sans-serif; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent); background: rgba(0,0,0,.55); border: 1.5px solid rgba(255,149,0,.9);
+    padding: 8px 14px; border-radius: 999px; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    margin-bottom: 4px; }
+  #count { font: 900 132px/1 ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif;
+    letter-spacing: -.03em; font-variant-numeric: tabular-nums; color: #fff;
+    text-shadow: 0 0 28px rgba(255,149,0,.45), 0 6px 30px rgba(0,0,0,.75); transition: opacity .3s; }
+  #count.ready { opacity: .45; }
+  #count.pop { animation: pop .34s cubic-bezier(.2,1.6,.4,1); }
+  #count.shake { animation: shake .55s ease-out; }
+  @keyframes pop { 0% { transform: scale(1); } 30% { transform: scale(1.3); color: var(--accent); } 100% { transform: scale(1); } }
+  @keyframes shake { 0%, 100% { transform: none; } 12% { transform: translateX(-16px) rotate(-3deg); }
+    28% { transform: translateX(14px) rotate(2deg); } 44% { transform: translateX(-10px); } 60% { transform: translateX(7px); }
+    76% { transform: translateX(-3px); } }
+  #hint { font: 700 17px/1.3 -apple-system, system-ui, sans-serif; color: rgba(255,255,255,.85); min-height: 22px;
+    text-shadow: 0 2px 10px rgba(0,0,0,.8); }
+  #hint.pulse { animation: breathe 1.6s ease-in-out infinite; }
+  @keyframes breathe { 50% { opacity: .45; } }
+  /* End of a run: a big banner that slams in, readable from a few meters away. */
+  #banner { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0; }
+  #banner.show { opacity: 1; animation: bannerOut .4s ease-in 2.2s forwards; }
+  .app #banner.show { animation-delay: 3.6s; }
+  #banner .plate { text-align: center; padding: 22px 30px 24px; border-radius: 32px; background: rgba(0,0,0,.62);
+    border: 2px solid rgba(255,149,0,.9); box-shadow: 0 0 60px rgba(255,149,0,.35), 0 20px 60px rgba(0,0,0,.6);
+    backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); min-width: 260px; }
+  #banner.show .plate { animation: slam .5s cubic-bezier(.2,1.5,.35,1); }
+  #banner .kicker { font: 800 14px/1 -apple-system, system-ui, sans-serif; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--accent); min-height: 14px; }
+  #banner .title { font: 900 68px/1 ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif;
+    letter-spacing: -.02em; text-transform: uppercase; color: #fff; margin: 8px 0 10px;
+    text-shadow: 0 0 30px rgba(255,149,0,.55); white-space: nowrap; }
+  #banner.ground .title, #banner.wrong .title { color: var(--accent); text-shadow: 0 0 34px rgba(255,149,0,.6); }
+  #banner .sub { font: 800 22px/1 ui-rounded, -apple-system, system-ui, sans-serif; color: rgba(255,255,255,.9);
+    font-variant-numeric: tabular-nums; }
+  @keyframes slam { 0% { transform: scale(2.1); opacity: 0; } 60% { transform: scale(.94); opacity: 1; } 100% { transform: scale(1); } }
+  @keyframes bannerOut { to { opacity: 0; transform: scale(.96); } }
+  @media (max-width: 380px) { #banner .title { font-size: 54px; } #count { font-size: 112px; } }
+  /* A flash of orange light around the edges when a run ends. */
+  #flash { position: fixed; inset: 0; pointer-events: none; opacity: 0;
+    background: radial-gradient(ellipse at center, transparent 45%, rgba(255,149,0,.55) 100%); }
+  #flash.on { animation: flash .7s ease-out; }
+  #flash.lost.on, #flash.stopped.on { animation: none; }
+  @keyframes flash { 0% { opacity: 1; } 100% { opacity: 0; } }
   #status { position: fixed; left: 12px; bottom: calc(max(12px, env(safe-area-inset-bottom)) + 64px);
     background: rgba(0,0,0,.55); border-radius: 12px; padding: 8px 10px; font: 600 12px/1.45 ui-monospace,
     SFMono-Regular, Menlo, monospace; white-space: pre; pointer-events: none; }
@@ -60,12 +101,12 @@
   .toggle { display: flex; justify-content: space-between; align-items: center; margin: 14px 0; font-weight: 600; }
   .toggle input { width: 22px; height: 22px; accent-color: var(--accent); }
   #start { position: fixed; inset: 0; display: grid; place-content: center; text-align: center; padding: 24px; gap: 14px; }
-  #start h1 { margin: 0; font-size: 34px; }
+  #start h1 { margin: 0; font: 900 40px/1.05 ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif;
+    letter-spacing: -.01em; }
   #start p { margin: 0; color: var(--muted); max-width: 320px; }
   #start .btn { height: 52px; font-size: 17px; padding: 0 28px; justify-self: center; }
   .hidden { display: none !important; }
-  .app #flip, .app #settings, .app #bottombar, .app #go { display: none !important; }
-  .app .top { justify-content: center; }
+  .app #topbar, .app #bottombar, .app #go { display: none !important; }
   .app #start h1, .app #start p:not(#loading) { display: none; }
 </style>
 </head>
@@ -85,11 +126,15 @@
 <div class="top hidden" id="topbar">
   <button class="btn" id="flip" aria-label="Switch camera">⟲</button>
   <span class="chip" id="ballchip">Ball —</span>
-  <span class="chip hidden" id="modechip"></span>
   <button class="btn" id="settings" aria-label="Settings">⚙︎</button>
 </div>
-<div id="count" class="hidden">0</div>
-<div id="event"></div>
+<div id="hud" class="hidden">
+  <div id="modepill" class="hidden"></div>
+  <div id="count" class="ready">0</div>
+  <div id="hint"></div>
+</div>
+<div id="flash"></div>
+<div id="banner" role="status" aria-live="assertive"><div class="plate"><div class="kicker"></div><div class="title"></div><div class="sub"></div></div></div>
 <div id="status" class="hidden"></div>
 <div class="bottom hidden" id="bottombar">
   <button class="btn" id="reset">Reset</button>
@@ -135,14 +180,15 @@ let src = video;
 const FW = () => src.videoWidth ?? src.width, FH = () => src.videoHeight ?? src.height;
 
 // ---------- Settings (remembered on this phone) ----------
-const defaults = { v: 3, detector: "efficientdet_lite0", minScore: 0.1, contact: 1.8, cooldown: 180,
-  groundTol: 0.35, handsFoul: false, upperBody: true, showAll: false, facing: "environment", debug: true,
+const defaults = { v: 4, detector: "efficientdet_lite0", minScore: 0.1, contact: 1.8, cooldown: 180,
+  groundTol: 0.35, handsFoul: false, upperBody: true, showAll: false, facing: "environment", debug: false,
   aboveKnees: true };
 let S = { ...defaults };
 try {
   const saved = JSON.parse(localStorage.getItem("juggleLab") || "{}");
   if ((saved.v ?? 1) < 2) delete saved.minScore;  // new default for clean backgrounds
   if ((saved.v ?? 1) < 3) { delete saved.handsFoul; delete saved.contact; }
+  if ((saved.v ?? 1) < 4) delete saved.debug;
   Object.assign(S, saved, { v: defaults.v });
 } catch {}
 const save = () => { try { localStorage.setItem("juggleLab", JSON.stringify(S)); } catch {} };
@@ -200,7 +246,7 @@ const ONE_FOOT = { rightFoot: { foot: "right", title: "Right Foot Only" }, leftF
 const mode = ONE_FOOT[params.get("mode")] ? params.get("mode") : "classic";
 const oneFoot = ONE_FOOT[mode] ?? null;
 if (oneFoot) {
-  $("modechip").textContent = oneFoot.title; $("modechip").classList.remove("hidden");
+  $("modepill").textContent = oneFoot.title; $("modepill").classList.remove("hidden");
   document.querySelector("#start h1").textContent = oneFoot.title;
 }
 if (appMode) {
@@ -232,9 +278,10 @@ const FOOT = [29, 30, 31, 32, 27, 28];   // heels, foot tips, ankles
 const KNEE = [25, 26], HEAD = [0], WRIST = [15, 16, 17, 18, 19, 20];
 let ball = null, trail = [], heights = [], flight = [], inHand = [], lastSeen = 0, detHistory = [];
 let groundSince = null, totalTouches = 0, ends = 0;
-let count = 0, lastTouch = 0, phase = "ready", groundY = null, groundFrames = 0, eventText = "", eventTime = 0;
+let count = 0, lastTouch = 0, phase = "ready", groundY = null, groundFrames = 0;
 let fpsTimes = [], log = [];   // test mode: what happened when
 let poses = [];   // the player's pose over the last half second, for telling the feet apart
+let footLows = [], floorSamples = [], floorOff = 0;   // ground line from the standing foot; the floor where the ball is
 
 // ---------- Ball search ----------
 // The detector sees a small square (320 px for Lite0). Shrinking a whole
@@ -355,10 +402,9 @@ function findTurn(now, minRise = 0.3) {
   if (low === 0 || low === recent.length - 1) return null;
   const fell = recent[low].y - Math.min(...recent.slice(0, low).map((p) => p.y));
   const rose = recent[low].y - Math.min(...recent.slice(low + 1).map((p) => p.y));
-  return fell >= ball.d * 0.3 && rose >= ball.d * minRise ? { ...recent[low], rose: rose / ball.d } : null;
+  return fell >= ball.d * 0.3 && rose >= ball.d * minRise ? { ...recent[low], rose: rose / ball.d, fell: fell / ball.d } : null;
 }
 
-function say(text) { eventText = text; eventTime = performance.now(); }
 
 // Which foot touched the ball: the side of the body the ball was on. The pose
 // model's own left/right names for the feet often swap for a few frames when a
@@ -386,6 +432,69 @@ function touchSide(turn) {
   return { off: +off.toFixed(2), side: Math.abs(off) < SIDE_MIN ? null : off > 0 ? "left" : "right" };
 }
 
+// The floor where the ball is. The ground line comes from the feet, but the
+// ball is usually a little nearer the camera, so on the floor it sits lower in
+// the picture. Learned from the ball itself whenever it rests or rolls on the
+// ground (before a kick-up, after a drop): its bottom, in ball sizes below the
+// ground line.
+function learnFloor(now) {
+  if (!ball || groundY == null || now - lastSeen > 60) return;
+  const recent = trail.filter((q) => now - q.t < 300);
+  if (recent.length < 4) return;
+  const ys = recent.map((q) => q.y), still = (Math.max(...ys) - Math.min(...ys)) / ball.d < 0.2;
+  const bottom = ball.y + ball.d / 2;
+  if (!still || bottom < groundY - ball.d * 0.2) return;
+  floorSamples.push((bottom - groundY) / ball.d);
+  if (floorSamples.length > 40) floorSamples.shift();
+  const sorted = [...floorSamples].sort((a, b) => a - b);
+  floorOff = Math.max(-0.3, Math.min(1.5, sorted[Math.floor(sorted.length / 2)]));
+}
+
+// Was this low point a bounce off the floor? A real touch always has a foot
+// under the ball, and that foot is lifted or moving (it kicks); a bounce comes
+// off the floor next to feet that stand still, or with no foot near at all.
+// Returns why it's a bounce ("floor" | "nofoot"), or null for a possible touch.
+function bounced(turn) {
+  if (groundY == null) return null;
+  const W = FW(), H = FH(), d = ball.d, bottom = turn.y + d / 2;
+  if (bottom < groundY - d * 1.0) return null;   // well off the ground: not a bounce
+  // A bounce comes after a real fall; a ball lying at the edge of the picture
+  // (half cut off, its box jumping about) isn't one.
+  if (turn.fell < 0.8 || turn.x < d * 0.6 || turn.x > W - d * 0.6) return null;
+  // The two feet in each recent pose (ankle, heel, toe), followed from the
+  // frame of the low point to now.
+  const feetOf = (p) => [[27, 29, 31], [28, 30, 32]].map((ids) => ids.map((i) => p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null).filter(Boolean)).filter((f) => f.length);
+  const frames = poses.filter((q) => q.t >= turn.t - 200);
+  const at = frames.reduce((a, q) => Math.abs(q.t - turn.t) < Math.abs(a.t - turn.t) ? q : a, frames[0]);
+  if (!at) return null;
+  const near = (f) => Math.min(...f.map((q) => Math.hypot(q.x - turn.x, q.y - bottom)));
+  const feet = feetOf(at.p);
+  if (!feet.length) return null;
+  const foot = feet.sort((a, b) => near(a) - near(b))[0];
+  const gap = near(foot) / d;
+  if (gap > 1.0) return "nofoot";
+  // How much that foot moved around the touch, and how high it is off the ground.
+  const mid = (f) => ({ x: f.reduce((s, q) => s + q.x, 0) / f.length, y: f.reduce((s, q) => s + q.y, 0) / f.length });
+  const path = [];
+  for (const q of frames) {
+    const fs = feetOf(q.p); if (!fs.length) continue;
+    const c = path.length ? path.at(-1) : mid(foot);
+    path.push(fs.map(mid).sort((a, b) => Math.hypot(a.x - c.x, a.y - c.y) - Math.hypot(b.x - c.x, b.y - c.y))[0]);
+  }
+  let move = 0;
+  for (const a of path) for (const b of path) move = Math.max(move, Math.hypot(a.x - b.x, a.y - b.y) / d);
+  const lift = (groundY - Math.max(...foot.map((q) => q.y))) / d;
+  const kicking = gap < 0.7 && (move >= 0.25 || lift >= 0.3);
+  // Clearly below the feet: down on the floor in front of them. A touch never
+  // gets there, because the foot is under the ball.
+  if (bottom > groundY + d * 0.3) return "floor";
+  // Down on the floor where the ball is (or within a sixth of a ball of it),
+  // with no foot kicking it.
+  const onFloor = bottom > groundY + (floorOff - 0.15) * d;
+  if (onFloor && !kicking) return "floor";
+  return null;
+}
+
 function judge(now, people) {
   const p = people[0];
   const W = FW(), H = FH();
@@ -393,13 +502,20 @@ function judge(now, people) {
   while (poses.length && now - poses[0].t > 500) poses.shift();
   const pt = (i) => p && p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null;
 
-  // Ground line: the lowest foot point while standing, smoothed.
+  // Ground line: where the player's standing foot is. A juggler always has a
+  // foot down, so it's the low end of the feet over the last second and a half,
+  // kept up to date during a run too (the player moves, the camera may too).
   if (p) {
-    const feet = FOOT.map(pt).filter(Boolean);
-    if (feet.length) {
-      const lowest = Math.max(...feet.map((f) => f.y));
-      if (phase !== "live") groundY = groundY == null ? lowest : groundY * 0.9 + lowest * 0.1;
-    }
+    // (Foot points on top of the ball don't count: the pose model sometimes
+    // puts a foot on a ball lying on the floor.)
+    const onBall = (f) => ball && now - lastSeen < 200 && Math.hypot(f.x - ball.x, f.y - ball.y) < ball.d * 0.7;
+    const feet = FOOT.map(pt).filter((f) => f && !onBall(f));
+    if (feet.length) footLows.push({ t: now, y: Math.max(...feet.map((f) => f.y)) });
+  }
+  while (footLows.length && now - footLows[0].t > 1500) footLows.shift();
+  if (footLows.length >= 3) {
+    const ys = footLows.map((f) => f.y).sort((a, b) => a - b);
+    groundY = ys[Math.floor((ys.length - 1) * 0.85)];
   }
   if (phase === "live" && now - lastSeen > 2500) { end("Out of view!"); return; }
   if (!ball || now - lastSeen > 120) return;
@@ -427,7 +543,7 @@ function judge(now, people) {
     // Moving with the hand, or resting in it.
     return apart < path * 0.4 || path < ball.d * 0.3;
   };
-  if (phase === "live" && heldFor(700)) { end("Hand!"); return; }
+  if (phase === "live" && heldFor(700)) { end("Hand!", { x: ball.x, y: ball.y }); return; }
 
   // Touch: the ball fell, bottomed out, and is going back up, and its lowest
   // point was within reach of a foot (or knee/head). Hovering near a foot
@@ -435,6 +551,18 @@ function judge(now, people) {
   // Starting a run takes a real kick-up (the ball rises almost a ball size), so
   // a ball rolling or bobbling at the feet doesn't start one.
   const turn = findTurn(now, phase === "live" ? 0.3 : 0.8);
+  learnFloor(now);
+  // Bounce: the ball came down on the floor and went back up with no foot
+  // under it. Never a touch, and during a run it's a drop, right away.
+  if (turn && p && turn.t - lastTouch > S.cooldown) {
+    const b = bounced(turn);
+    if (b) {
+      lastTouch = turn.t;
+      log.push({ t: +(turn.t / 1000).toFixed(2), bounce: b, at: [Math.round(turn.x), Math.round(turn.y), Math.round(ball.d)] });
+      if (phase === "live") end("Ground!", { x: turn.x, y: turn.y + ball.d / 2 });
+      return;
+    }
+  }
   // A bounce with the ball down on the floor (dribbling, rolling under the
   // sole) counts only if the ball then really lifts, a full ball size.
   const footLine = p ? Math.max(-Infinity, ...FOOT.map(pt).filter(Boolean).map((f) => f.y)) : -Infinity;
@@ -451,7 +579,7 @@ function judge(now, people) {
     const body = dist(parts), hand = dist(WRIST);
     const previousTouch = lastTouch;
     lastTouch = turn.t;
-    if (hand < reach * 0.6 && hand < body * 0.5 && S.handsFoul && phase === "live") { end("Hand!"); return; }
+    if (hand < reach * 0.6 && hand < body * 0.5 && S.handsFoul && phase === "live") { end("Hand!", { x: turn.x, y: turn.y }); return; }
     // Above the hips and closer to a hand than to the head: carried or rolled
     // on the arms, not a juggle. (Below the hips, hanging hands are often near.)
     const hipTop = Math.min(Infinity, ...[23, 24].map(pt).filter(Boolean).map((h) => h.y));
@@ -489,10 +617,10 @@ function judge(now, people) {
         // thighs and the head don't count.
         if (foot && foot !== oneFoot.foot) {
           log.push({ ...at, wrong: true });
-          if (phase === "live") end("Wrong Foot!");
+          if (phase === "live") end("Wrong Foot!", { x: turn.x, y: turn.y });
           return;
         }
-        if (upper) { log.push({ ...at, skip: "upper" }); if (phase === "live") say("Foot only"); return; }
+        if (upper) { log.push({ ...at, skip: "upper" }); if (phase === "live") flashHint(`Only your ${oneFoot.foot} foot counts`); return; }
         // Ball too near the middle to tell which foot: it counts during a run
         // (benefit of the doubt), but can't start one.
         if (!foot && phase !== "live") { log.push({ ...at, skip: "unsure" }); return; }
@@ -502,10 +630,10 @@ function judge(now, people) {
       toApp({ type: "touch", count, part, time: turn.t / 1000,
         height: Number.isFinite(highest) ? Math.max(0, (turn.y - ball.d / 2 - highest) / ball.d) : null });
       log.push({ ...at, touch: count, by: body < reach ? "part" : "legs", raw: named[0]?.part ?? null });
-      $("count").textContent = count;
+      setCount(count, true);
+      hideEnd();
       navigator.vibrate?.(15);
-      touchPulse = { t: now, x: turn.x, y: turn.y };
-      say("Touch");
+      effect("touch", turn.x, turn.y);
       return;
     }
   }
@@ -515,28 +643,72 @@ function judge(now, people) {
   // moving fast and leaves right away.)
   if (phase === "live" && groundY != null) {
     const bottom = ball.y + ball.d / 2;
-    const atGround = bottom > groundY - ball.d * S.groundTol;
+    // On the ground line, or lying still away from the feet (rolled off behind
+    // or beside the player, where the floor sits higher in the picture).
+    const feetNow = FOOT.map(pt).filter(Boolean);
+    const awayFromFeet = feetNow.length && Math.min(...feetNow.map((f) => Math.hypot(f.x - ball.x, f.y - bottom))) > ball.d * 2;
+    const atGround = bottom > groundY - ball.d * S.groundTol || (awayFromFeet && bottom > groundY - ball.d * 1.5);
     const recent = trail.filter((t) => now - t.t < 120);
     const vy = recent.length > 1 ? (recent.at(-1).y - recent[0].y) / Math.max(1, recent.at(-1).t - recent[0].t) * 1000 : 0;
     const seen = now - lastSeen < 60 && recent.length >= 2;
     const settled = seen && atGround && Math.abs(vy) < ball.d * 2;
     if (!settled) groundSince = null;
     else if (groundSince == null) groundSince = now;
-    if (groundSince != null && now - groundSince > 400 && now - lastTouch > 400) end("Ground!");
+    if (groundSince != null && now - groundSince > 400 && now - lastTouch > 400) end("Ground!", { x: ball.x, y: bottom });
   }
 }
 
-function end(reason) {
-  $("count").textContent = count;
+function end(reason, where) {
   phase = "ended"; ends += 1; groundSince = null;
   stats.ends[reason] = (stats.ends[reason] || 0) + 1;
   log.push({ t: +(lastSeen / 1000).toFixed(2), end: reason, count });
-  say(`${reason}  ·  ${count}`);
+  showEnd(reason, count, where);
   const reasons = { "Ground!": "drop", "Hand!": "hand", "Out of view!": "lost", "Stopped!": "stopped", "Wrong Foot!": "wrongFoot" };
   toApp({ type: "end", reason: reasons[reason] ?? "drop", count });
-  // In the app one run is one session; on the web, go again.
-  if (!appMode) setTimeout(() => { if (phase === "ended") { phase = "ready"; } }, 1500);
+  // In the app one run is one session; on the web, go again once the banner is gone.
+  if (!appMode) setTimeout(() => { if (phase === "ended") { phase = "ready"; setCount(count); } }, 2600);
 }
+
+// ---------- HUD ----------
+function setCount(n, pop) {
+  const c = $("count");
+  c.textContent = n;
+  c.classList.toggle("ready", phase === "ready");
+  if (pop) { c.classList.remove("pop", "shake"); void c.offsetWidth; c.classList.add("pop"); }
+}
+let hintUntil = 0;
+function flashHint(text) { $("hint").textContent = text; $("hint").classList.remove("pulse"); hintUntil = performance.now() + 1800; }
+function updateHint(now) {
+  if (performance.now() < hintUntil) return;
+  let text = "";
+  if (phase !== "ended" && (!ball || now - lastSeen > 1200)) text = "Looking for the ball…";
+  else if (phase === "ready" && !appMode) text = oneFoot ? `Kick it up with your ${oneFoot.foot} foot` : "Kick the ball up to start";
+  if ($("hint").textContent !== text) $("hint").textContent = text;
+  $("hint").classList.toggle("pulse", !!text);
+}
+const ENDS = {
+  "Ground!": { kicker: "It hit the floor", title: "Ground!", cls: "ground" },
+  "Hand!": { kicker: "Handball", title: "Hand!", cls: "hand" },
+  "Wrong Foot!": { kicker: oneFoot ? oneFoot.title : "", title: "Wrong Foot!", cls: "wrong" },
+  "Out of view!": { kicker: "Lost the ball", title: "Out of View", cls: "lost" },
+  "Stopped!": { kicker: "", title: "Stopped", cls: "stopped" },
+};
+function showEnd(reason, n, where) {
+  const e = ENDS[reason] ?? { kicker: "", title: reason, cls: "" };
+  const b = $("banner");
+  b.querySelector(".kicker").textContent = e.kicker;
+  b.querySelector(".title").textContent = e.title;
+  b.querySelector(".sub").textContent = `${n} ${n === 1 ? "juggle" : "juggles"}`;
+  b.className = ""; void b.offsetWidth; b.className = "show " + e.cls;
+  const f = $("flash"); f.className = ""; void f.offsetWidth; f.className = "on " + e.cls;
+  setCount(n);
+  const c = $("count"); c.classList.remove("pop", "shake"); void c.offsetWidth; c.classList.add("shake");
+  $("hint").textContent = ""; hintUntil = 0;
+  const at = where ?? (ball ? { x: ball.x, y: ball.y } : null);
+  if (at) effect(e.cls || "hand", at.x, at.y);
+  navigator.vibrate?.([30, 40, 60]);
+}
+function hideEnd() { $("banner").className = ""; }
 
 // Called by the app.
 window.footy = {
@@ -544,17 +716,84 @@ window.footy = {
   async flip() { S.facing = S.facing === "user" ? "environment" : "user"; await startCamera(); },
 };
 
-function reset() { count = 0; phase = "ready"; lastTouch = 0; $("count").textContent = "0"; say(""); }
+function reset() { count = 0; phase = "ready"; lastTouch = 0; setCount(0); hideEnd(); }
 
 // ---------- Drawing ----------
 const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
   [23, 25], [25, 27], [27, 29], [29, 31], [27, 31], [24, 26], [26, 28], [28, 30], [30, 32], [28, 32]];
-let touchPulse = { t: -1e9, x: 0, y: 0 };
+// Short-lived effects drawn over the video: a touch spark, a ground impact, a
+// wrong-foot cross. Timed on the real clock so they play smoothly in tests too.
+let effects = [];
+function effect(kind, x, y) {
+  const d = ball?.d ?? FH() / 12, t = performance.now();
+  const n = kind === "ground" ? 22 : kind === "touch" ? 10 : 0;
+  const parts = Array.from({ length: n }, (_, i) => {
+    const a = kind === "ground" ? Math.PI * (1.05 + 0.9 * Math.random()) : Math.PI * 2 * (i / n) + Math.random() * 0.5;
+    const v = d * (kind === "ground" ? 3 + 4 * Math.random() : 3 + 2 * Math.random());
+    return { vx: Math.cos(a) * v, vy: Math.sin(a) * v, r: 0.05 + Math.random() * 0.07 };
+  });
+  effects.push({ kind, x, y, d, t, parts });
+}
+let fxFrozen = null;   // test: &play=1&freeze=1 stops the end animation mid-way for a screenshot
+function drawEffects(lw) {
+  const t = fxFrozen ?? performance.now();
+  effects = effects.filter((e) => t - e.t < 1100);
+  for (const e of effects) {
+    const s = (t - e.t) / 1000, d = e.d;
+    ctx.save();
+    if (e.kind === "touch") {
+      const a = s / 0.5;
+      if (a < 1) {
+        ctx.strokeStyle = `rgba(255,149,0,${1 - a})`; ctx.lineWidth = lw * 3 * (1 - a) + 1;
+        ctx.beginPath(); ctx.arc(e.x, e.y, d * (0.6 + a * 1.6), 0, Math.PI * 2); ctx.stroke();
+      }
+    } else if (e.kind === "ground") {
+      // Shockwave rings flat on the floor, a bright flash, and dust kicked up.
+      for (let k = 0; k < 3; k++) {
+        const a = (s - k * 0.12) / 0.7;
+        if (a < 0 || a > 1) continue;
+        const rx = d * (0.5 + a * 3.2);
+        ctx.strokeStyle = `rgba(255,${k === 0 ? 200 : 149},${k === 0 ? 80 : 0},${(1 - a) * 0.95})`;
+        ctx.lineWidth = lw * (4 - k) * (1 - a) + 1;
+        ctx.shadowColor = "#ff9500"; ctx.shadowBlur = lw * 8;
+        ctx.beginPath(); ctx.ellipse(e.x, e.y, rx, rx * 0.26, 0, 0, Math.PI * 2); ctx.stroke();
+      }
+      const fa = s / 0.25;
+      if (fa < 1) {
+        const g = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, d * 1.6);
+        g.addColorStop(0, `rgba(255,255,255,${0.9 * (1 - fa)})`); g.addColorStop(1, "rgba(255,149,0,0)");
+        ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(e.x, e.y, d * 1.6, d * 0.6, 0, 0, Math.PI * 2); ctx.fill();
+      }
+    } else if (e.kind === "wrong") {
+      // A big cross that snaps in where the wrong foot hit the ball.
+      const a = Math.min(1, s / 0.18), fade = s < 0.7 ? 1 : Math.max(0, 1 - (s - 0.7) / 0.4), r = d * (0.9 + 0.3 * (1 - a));
+      ctx.strokeStyle = `rgba(255,149,0,${fade})`; ctx.lineWidth = lw * 4; ctx.shadowColor = "#ff9500"; ctx.shadowBlur = lw * 10;
+      ctx.beginPath(); ctx.moveTo(e.x - r * a, e.y - r * a); ctx.lineTo(e.x + r * a, e.y + r * a);
+      ctx.moveTo(e.x + r * a, e.y - r * a); ctx.lineTo(e.x - r * a, e.y + r * a); ctx.stroke();
+    } else if (e.kind === "hand") {
+      const a = s / 0.8;
+      if (a < 1) {
+        ctx.strokeStyle = `rgba(255,255,255,${1 - a})`; ctx.lineWidth = lw * 3;
+        ctx.beginPath(); ctx.arc(e.x, e.y, d * (0.7 + a * 1.4), 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+    // Sparks and dust: fly out and fall.
+    ctx.shadowBlur = 0;
+    for (const q of e.parts) {
+      const x = e.x + q.vx * s, y = e.y + q.vy * s + 0.5 * d * 9 * s * s, fade = Math.max(0, 1 - s / 0.9);
+      if (fade <= 0) continue;
+      ctx.fillStyle = `rgba(255,${120 + Math.round(q.r * 450)},${e.kind === "touch" ? 40 : 10},${fade})`;
+      ctx.beginPath(); ctx.arc(x, y, d * q.r, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
 
 function draw(cands, people, now) {
   const W = FW(), H = FH();
   if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
   ctx.clearRect(0, 0, W, H);
+  if (playing) ctx.drawImage(src, 0, 0);
   const lw = Math.max(2, H / 260);
   ctx.lineCap = "round"; ctx.lineJoin = "round";
 
@@ -563,7 +802,7 @@ function draw(cands, people, now) {
     ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(W, groundY); ctx.stroke(); ctx.setLineDash([]);
   }
   if (S.debug && searchBox) {
-    ctx.setLineDash([6, 8]); ctx.strokeStyle = "rgba(90,200,250,.5)"; ctx.lineWidth = lw * 0.5;
+    ctx.setLineDash([6, 8]); ctx.strokeStyle = "rgba(255,255,255,.3)"; ctx.lineWidth = lw * 0.5;
     ctx.strokeRect(searchBox.x, searchBox.y, searchBox.w, searchBox.h); ctx.setLineDash([]);
   }
   if (S.debug && S.showAll) {
@@ -571,18 +810,18 @@ function draw(cands, people, now) {
     for (const c of cands) ctx.strokeRect(c.box.originX, c.box.originY, c.box.width, c.box.height);
   }
 
-  // Skeleton: glowing bones, bright joints, feet in orange.
-  for (const p of people) {
+  // Skeleton: white bones with an orange glow, legs fading to orange feet.
+  for (const p of people.slice(0, 1)) {
     const P = (i) => p[i] && p[i].visibility > 0.4 ? [p[i].x * W, p[i].y * H] : null;
     ctx.save();
-    ctx.shadowColor = "rgba(90,200,250,.9)"; ctx.shadowBlur = lw * 6;
+    ctx.shadowColor = "rgba(255,149,0,.95)"; ctx.shadowBlur = lw * 7;
     for (const [a, b] of BONES) {
       const A = P(a), B = P(b);
       if (!A || !B) continue;
       const lower = a >= 23;
       const g = ctx.createLinearGradient(A[0], A[1], B[0], B[1]);
-      g.addColorStop(0, lower ? "rgba(255,255,255,.95)" : "rgba(90,200,250,.9)");
-      g.addColorStop(1, lower && b >= 27 ? "rgba(255,149,0,.95)" : "rgba(255,255,255,.95)");
+      g.addColorStop(0, "rgba(255,255,255,.95)");
+      g.addColorStop(1, lower && b >= 25 ? "rgba(255,159,10,.98)" : "rgba(255,255,255,.95)");
       ctx.strokeStyle = g; ctx.lineWidth = lw * (lower ? 2.2 : 1.6);
       ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.stroke();
     }
@@ -590,7 +829,7 @@ function draw(cands, people, now) {
     const head = P(0), sl = P(11), sr = P(12);
     if (head && sl && sr) {
       const r = Math.hypot(sl[0] - sr[0], sl[1] - sr[1]) * 0.32;
-      ctx.save(); ctx.shadowColor = "rgba(90,200,250,.9)"; ctx.shadowBlur = lw * 6;
+      ctx.save(); ctx.shadowColor = "rgba(255,149,0,.95)"; ctx.shadowBlur = lw * 7;
       ctx.strokeStyle = "rgba(255,255,255,.95)"; ctx.lineWidth = lw * 1.6;
       ctx.beginPath(); ctx.arc(head[0], head[1], r, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
     }
@@ -606,12 +845,6 @@ function draw(cands, people, now) {
     }
   }
 
-  // Touch pulse: an expanding ring where the ball was kicked.
-  const age = (now - touchPulse.t) / 500;
-  if (age < 1) {
-    ctx.strokeStyle = `rgba(255,149,0,${1 - age})`; ctx.lineWidth = lw * 3 * (1 - age) + 1;
-    ctx.beginPath(); ctx.arc(touchPulse.x, touchPulse.y, (ball?.d ?? H / 12) * (0.6 + age * 1.6), 0, Math.PI * 2); ctx.stroke();
-  }
 
   // Ball: a fading comet trail and a glowing ring.
   for (let i = 1; i < trail.length; i++) {
@@ -623,6 +856,7 @@ function draw(cands, people, now) {
     ctx.save(); ctx.shadowColor = "#ff9500"; ctx.shadowBlur = lw * 8;
     ctx.strokeStyle = "#ff9500"; ctx.lineWidth = lw * 1.8;
     ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.d * 0.62, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+
     if (S.debug) {
       ctx.save(); ctx.translate(ball.x, ball.y - ball.d * 0.85);
       if (S.facing === "user" && !testSource) ctx.scale(-1, 1);
@@ -630,6 +864,7 @@ function draw(cands, people, now) {
       ctx.textAlign = "center"; ctx.fillText(Math.round(ball.score * 100) + "%", 0, 0); ctx.restore();
     }
   }
+  drawEffects(lw);
 }
 
 // The pose model sometimes "sees" a person in a ball or a wall. Keep a pose
@@ -699,12 +934,40 @@ function loop() {
         `best guess ${Math.round(100 * Math.max(0, ...cands.map((c) => c.score)))}%\n` +
         `people ${people.length} · ${phase}${searchBox ? " · zoomed" : ""}`;
     }
-    const isEnd = eventText.includes("!");
-    $("event").textContent = now - eventTime < (isEnd ? 3000 : 1500) ? eventText : "";
-    $("event").classList.toggle("big", isEnd);
+    updateHint(now);
   }
   requestAnimationFrame(loop);
 }
+
+// Test mode ?frames=dir/&play=1&fps=: plays still frames through the normal
+// screen (skeleton, count, banners) instead of the camera, to see the visuals.
+let playing = false;
+async function play() {
+  playing = true;
+  const fps = +(params.get("fps") || 25);
+  for (let i = 0; await nextFrame(i, fps); i++) {
+    const now = i * 1000 / fps + 1;
+    const { people, cands, found } = step(now);
+    draw(cands, people, now);
+    $("ballchip").textContent = found ? `Ball ${Math.round(found.score * 100)}%` : "Looking for ball";
+    updateHint(now);
+    // After an ending, hold the picture for a moment so the end animation plays out.
+    const ending = phase === "ended" && wasLive;
+    const until = performance.now() + (ending ? 2200 : Math.max(0, 1000 / fps - 5));
+    wasLive = phase === "live";
+    if (ending && params.has("freeze")) {
+      await new Promise((r) => setTimeout(r, 300));
+      draw(cands, people, now); fxFrozen = performance.now();
+      document.getAnimations().forEach((a) => a.pause());
+      return;
+    }
+    do {
+      if (effects.length) draw(cands, people, now);
+      await new Promise((r) => requestAnimationFrame(r));
+    } while (performance.now() < until);
+  }
+}
+let wasLive = false;
 
 // Test mode ?src=clip.mp4&eval=1: steps through the clip and leaves the results
 // in window.evalResult. A hidden tab may stop decoding video, so for automated
@@ -783,9 +1046,10 @@ $("go").addEventListener("click", async () => {
   }
   toApp({ type: "ready" });
   $("start").classList.add("hidden");
-  for (const id of ["topbar", "count", "bottombar"]) $(id).classList.remove("hidden");
+  for (const id of ["topbar", "hud", "bottombar"]) $(id).classList.remove("hidden");
   $("status").classList.toggle("hidden", !S.debug);
   if ((testSource || testFrames) && new URLSearchParams(location.search).has("eval")) { await evaluate(); return; }
+  if (testFrames && params.has("play")) { await play(); return; }
   requestAnimationFrame(loop);
 });
 $("flip").addEventListener("click", async () => { S.facing = S.facing === "user" ? "environment" : "user"; save(); await startCamera(); });
