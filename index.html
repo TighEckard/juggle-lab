@@ -719,10 +719,11 @@ function judge(now, people) {
   // Near the floor (within about a ball of the feet), a ball glancing off a
   // leg on its way down only pops up a little: a touch there has to lift it
   // at least half a ball.
-  const nearFloor = turn && turn.y + ball.d / 2 > footLine - ball.d * 1.2;
+  const rej = (why) => log.push({ t: +(turn.t / 1000).toFixed(2), rej: why });
+  if (turn && p && turn.t - lastTouch > S.cooldown && ((onFloor && turn.rose < 1) || bobbing)) rej(bobbing ? "bobbing" : "onFloor");
   if (turn && p && turn.t - lastTouch > S.cooldown && (!onFloor || turn.rose >= 1) && !bobbing) {
     // In or near a hand lately: carried, not juggled.
-    if (heldFor(600)) { lastTouch = turn.t; return; }
+    if (heldFor(600)) { rej("held"); lastTouch = turn.t; return; }
     const reach = unit() * S.contact;
     const parts = [...FOOT, ...(S.upperBody ? [...KNEE, ...HEAD] : [])];
     const dist = (list) => Math.min(Infinity, ...list.map(pt).filter(Boolean).map((q) => Math.hypot(q.x - turn.x, q.y - turn.y)));
@@ -733,14 +734,18 @@ function judge(now, people) {
     // Above the hips and closer to a hand than to the head: carried or rolled
     // on the arms, not a juggle. (Below the hips, hanging hands are often near.)
     const hipTop = Math.min(Infinity, ...[23, 24].map(pt).filter(Boolean).map((h) => h.y));
-    if (turn.y < hipTop && hand < reach && hand < body) return;
+    if (turn.y < hipTop && hand < reach && hand < body) { rej("armsAboveHips"); return; }
 
     // Since the last touch the ball has to have been above the knees (its top
     // over the knee line). Low taps don't count.
-    const knees = KNEE.map(pt).filter(Boolean);
+    // (Judged where the knees were at the touch: a turn is only seen a few
+    // frames later, by when the kicking leg has lifted its knee past the ball.)
+    const atTouch = poses.length ? poses.reduce((a, q) => Math.abs(q.t - turn.t) < Math.abs(a.t - turn.t) ? q : a) : null;
+    const kp = atTouch && Math.abs(atTouch.t - turn.t) <= 150 ? atTouch.p : null;
+    const knees = KNEE.map((i) => kp ? (kp[i] && kp[i].visibility > 0.4 ? { x: kp[i].x * W, y: kp[i].y * H } : null) : pt(i)).filter(Boolean);
     const kneeY = knees.length ? knees.reduce((s, k) => s + k.y, 0) / knees.length : null;
     const highest = Math.min(Infinity, ...flight.filter((f) => f.t > previousTouch && f.t < turn.t).map((f) => f.top));
-    if (S.aboveKnees && kneeY != null && !(highest < kneeY)) return;
+    if (S.aboveKnees && kneeY != null && !(highest < kneeY)) { rej("belowKnees"); return; }
     // The ball only turns back up in the air if something hit it, so a turn
     // below the hips and within the legs' reach counts even if the foot dots
     // are a little off.
@@ -797,6 +802,7 @@ function judge(now, people) {
       effect("touch", turn.x, turn.y);
       return;
     }
+    rej("noContact");
   }
 
   // Ground: the ball stays at the ground line, rolling or resting, for a
@@ -1124,17 +1130,19 @@ function draw(cands, people, now) {
       ctx.strokeStyle = "rgba(255,255,255,.95)"; ctx.lineWidth = lw * 1.6;
       ctx.beginPath(); ctx.arc(head[0], head[1], r, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
     }
-    // Hands: a ring at each hand, bright orange while a hand is on the ball.
+    // Hands: red, so players see they're watched; a ring at each hand, bolder
+    // and glowing while a hand is on the ball.
     for (const ids of [[15, 17, 19, 21], [16, 18, 20, 22]]) {
       const q = ids.map(P).filter(Boolean);
       if (q.length < 2) continue;
       const hx = q.reduce((a, v) => a + v[0], 0) / q.length, hy = q.reduce((a, v) => a + v[1], 0) / q.length;
       ctx.save();
-      ctx.strokeStyle = holdingNow ? "#ff9500" : "rgba(255,255,255,.9)"; ctx.lineWidth = lw * (holdingNow ? 2.4 : 1.4);
-      if (holdingNow) { ctx.shadowColor = "#ff9500"; ctx.shadowBlur = lw * 10; }
+      ctx.strokeStyle = "#ff3b30"; ctx.fillStyle = "#ff3b30"; ctx.lineWidth = lw * (holdingNow ? 2.6 : 1.6);
+      ctx.shadowColor = "#ff3b30"; ctx.shadowBlur = lw * (holdingNow ? 12 : 4);
+      for (const v of q) { ctx.beginPath(); ctx.arc(v[0], v[1], lw * 1.3, 0, Math.PI * 2); ctx.fill(); }
       ctx.beginPath(); ctx.arc(hx, hy, lw * 5, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
     }
-    for (const i of [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 31, 32]) {
+    for (const i of [11, 12, 13, 14, 23, 24, 25, 26, 27, 28, 31, 32]) {
       const J = P(i); if (!J) continue;
       const foot = i >= 27;
       ctx.fillStyle = foot ? "#ff9500" : "#fff";
