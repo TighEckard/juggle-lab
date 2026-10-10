@@ -549,7 +549,8 @@ function learnFloor(now) {
 // of the floor) and nearly level for 0.25 s: it rolled, was dribbled, or
 // bounced where the bounce itself wasn't seen. A juggled ball only passes
 // through down there.
-let lowLog = [];
+let lowLog = [], floorPending = null;
+const touchSince = (t) => touchTimes.some((x) => x >= t - 100);
 function downOnFloor(now) {
   if (groundY == null) return false;
   if (ball && lastSeen === now) lowLog.push({ t: now, y: ball.y, low: ball.y + ball.d / 2 > groundY + (floorOff - 0.6) * unit() });
@@ -720,7 +721,19 @@ function judge(now, people) {
   // leg on its way down only pops up a little: a touch there has to lift it
   // at least half a ball.
   const rej = (why) => log.push({ t: +(turn.t / 1000).toFixed(2), rej: why, fell: +turn.fell.toFixed(2), rose: +turn.rose.toFixed(2), off: groundY == null ? null : +((turn.y + ball.d / 2 - groundY) / ball.d).toFixed(2) });
-  if (turn && p && turn.t - lastTouch > S.cooldown && ((onFloor && turn.rose < 1) || bobbing)) rej(bobbing ? "bobbing" : "onFloor");
+  // A fall onto the floor (the ball's bottom at or below the ground line) that
+  // no real touch follows is a drop, even with a foot nearby: either it never
+  // rises a ball (pending, judged half a second later) or the "touch" fails a
+  // juggling rule (below knees).
+  const downFall = () => phase === "live" && groundY != null && turn.fell >= 0.8 && (turn.y + ball.d / 2 - groundY) / ball.d >= 0;
+  if (turn && p && turn.t - lastTouch > S.cooldown && ((onFloor && turn.rose < 1) || bobbing)) {
+    rej(bobbing ? "bobbing" : "onFloor");
+    if (!bobbing && downFall() && (!floorPending || floorPending.t < turn.t - 100)) floorPending = { t: turn.t, x: turn.x, y: turn.y, bottom: turn.y + ball.d / 2 };
+  }
+  if (floorPending && phase === "live") {
+    if (touchSince(floorPending.t) || now - floorPending.t > 1500) floorPending = null;
+    else if (now - floorPending.t >= 500) { const w = floorPending; floorPending = null; end("Ground!", { x: w.x, y: w.bottom }); return; }
+  }
   if (turn && p && turn.t - lastTouch > S.cooldown && (!onFloor || turn.rose >= 1) && !bobbing) {
     // In or near a hand lately: carried, not juggled.
     if (heldFor(600)) { rej("held"); lastTouch = turn.t; return; }
@@ -745,7 +758,7 @@ function judge(now, people) {
     const knees = KNEE.map((i) => kp ? (kp[i] && kp[i].visibility > 0.4 ? { x: kp[i].x * W, y: kp[i].y * H } : null) : pt(i)).filter(Boolean);
     const kneeY = knees.length ? knees.reduce((s, k) => s + k.y, 0) / knees.length : null;
     const highest = Math.min(Infinity, ...flight.filter((f) => f.t > previousTouch && f.t < turn.t).map((f) => f.top));
-    if (S.aboveKnees && kneeY != null && !(highest < kneeY)) { rej("belowKnees"); return; }
+    if (S.aboveKnees && kneeY != null && !(highest < kneeY)) { rej("belowKnees"); if (downFall()) { end("Ground!", { x: turn.x, y: turn.y + ball.d / 2 }); } return; }
     // The ball only turns back up in the air if something hit it, so a turn
     // below the hips and within the legs' reach counts even if the foot dots
     // are a little off.
@@ -828,7 +841,7 @@ function judge(now, people) {
 
 function end(reason, where) {
   if (atwMode) flushAtw();
-  phase = "ended"; ends += 1; groundSince = null;
+  phase = "ended"; ends += 1; groundSince = null; floorPending = null;
   stats.ends[reason] = (stats.ends[reason] || 0) + 1;
   log.push({ t: +(lastSeen / 1000).toFixed(2), end: reason, count });
   showEnd(reason, atwMode ? atwCount : count, where);
@@ -1012,7 +1025,7 @@ window.footy = {
   async flip() { S.facing = S.facing === "user" ? "environment" : "user"; await startCamera(); },
 };
 
-function reset() { count = 0; atwCount = 0; atwPending = []; phase = "ready"; lastTouch = 0; setCount(0); hideEnd(); }
+function reset() { count = 0; atwCount = 0; atwPending = []; floorPending = null; phase = "ready"; lastTouch = 0; setCount(0); hideEnd(); }
 
 // ---------- Drawing ----------
 const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
