@@ -37,7 +37,7 @@
     display: flex; flex-direction: column; align-items: center; gap: 2px; pointer-events: none; }
   .app #hud { top: calc(max(12px, env(safe-area-inset-top)) + 6px); }
   #modepill { font: 800 13px/1 -apple-system, system-ui, sans-serif; letter-spacing: .14em; text-transform: uppercase;
-    color: var(--accent); background: rgba(255,149,0,.14); border: 1.5px solid rgba(255,149,0,.85);
+    color: var(--accent); background: rgba(0,0,0,.55); border: 1.5px solid rgba(255,149,0,.9);
     padding: 8px 14px; border-radius: 999px; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
     margin-bottom: 4px; }
   #count { font: 900 132px/1 ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif;
@@ -402,7 +402,7 @@ function findTurn(now, minRise = 0.3) {
   if (low === 0 || low === recent.length - 1) return null;
   const fell = recent[low].y - Math.min(...recent.slice(0, low).map((p) => p.y));
   const rose = recent[low].y - Math.min(...recent.slice(low + 1).map((p) => p.y));
-  return fell >= ball.d * 0.3 && rose >= ball.d * minRise ? { ...recent[low], rose: rose / ball.d } : null;
+  return fell >= ball.d * 0.3 && rose >= ball.d * minRise ? { ...recent[low], rose: rose / ball.d, fell: fell / ball.d } : null;
 }
 
 
@@ -458,6 +458,9 @@ function bounced(turn) {
   if (groundY == null) return null;
   const W = FW(), H = FH(), d = ball.d, bottom = turn.y + d / 2;
   if (bottom < groundY - d * 1.0) return null;   // well off the ground: not a bounce
+  // A bounce comes after a real fall; a ball lying at the edge of the picture
+  // (half cut off, its box jumping about) isn't one.
+  if (turn.fell < 0.8 || turn.x < d * 0.6 || turn.x > W - d * 0.6) return null;
   // The two feet in each recent pose (ankle, heel, toe), followed from the
   // frame of the low point to now.
   const feetOf = (p) => [[27, 29, 31], [28, 30, 32]].map((ids) => ids.map((i) => p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null).filter(Boolean)).filter((f) => f.length);
@@ -670,7 +673,7 @@ function end(reason, where) {
 function setCount(n, pop) {
   const c = $("count");
   c.textContent = n;
-  c.classList.toggle("ready", phase !== "live");
+  c.classList.toggle("ready", phase === "ready");
   if (pop) { c.classList.remove("pop", "shake"); void c.offsetWidth; c.classList.add("pop"); }
 }
 let hintUntil = 0;
@@ -731,8 +734,9 @@ function effect(kind, x, y) {
   });
   effects.push({ kind, x, y, d, t, parts });
 }
+let fxFrozen = null;   // test: &play=1&freeze=1 stops the end animation mid-way for a screenshot
 function drawEffects(lw) {
-  const t = performance.now();
+  const t = fxFrozen ?? performance.now();
   effects = effects.filter((e) => t - e.t < 1100);
   for (const e of effects) {
     const s = (t - e.t) / 1000, d = e.d;
@@ -778,7 +782,7 @@ function drawEffects(lw) {
     for (const q of e.parts) {
       const x = e.x + q.vx * s, y = e.y + q.vy * s + 0.5 * d * 9 * s * s, fade = Math.max(0, 1 - s / 0.9);
       if (fade <= 0) continue;
-      ctx.fillStyle = `rgba(255,${170 + Math.round(q.r * 600)},${e.kind === "touch" ? 60 : 30},${fade})`;
+      ctx.fillStyle = `rgba(255,${120 + Math.round(q.r * 450)},${e.kind === "touch" ? 40 : 10},${fade})`;
       ctx.beginPath(); ctx.arc(x, y, d * q.r, 0, Math.PI * 2); ctx.fill();
     }
     ctx.restore();
@@ -947,9 +951,23 @@ async function play() {
     draw(cands, people, now);
     $("ballchip").textContent = found ? `Ball ${Math.round(found.score * 100)}%` : "Looking for ball";
     updateHint(now);
-    await new Promise((r) => setTimeout(r, Math.max(0, 1000 / fps - 5)));
+    // After an ending, hold the picture for a moment so the end animation plays out.
+    const ending = phase === "ended" && wasLive;
+    const until = performance.now() + (ending ? 2200 : Math.max(0, 1000 / fps - 5));
+    wasLive = phase === "live";
+    if (ending && params.has("freeze")) {
+      await new Promise((r) => setTimeout(r, 300));
+      draw(cands, people, now); fxFrozen = performance.now();
+      document.getAnimations().forEach((a) => a.pause());
+      return;
+    }
+    do {
+      if (effects.length) draw(cands, people, now);
+      await new Promise((r) => requestAnimationFrame(r));
+    } while (performance.now() < until);
   }
 }
+let wasLive = false;
 
 // Test mode ?src=clip.mp4&eval=1: steps through the clip and leaves the results
 // in window.evalResult. A hidden tab may stop decoding video, so for automated
