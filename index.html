@@ -545,6 +545,19 @@ function learnFloor(now) {
 // under the ball, and that foot is lifted or moving (it kicks); a bounce comes
 // off the floor next to feet that stand still, or with no foot near at all.
 // Returns why it's a bounce ("floor" | "nofoot"), or null for a possible touch.
+// Down on the floor: during a run the ball stayed low (within 0.6 of a ball
+// of the floor) and nearly level for 0.25 s: it rolled, was dribbled, or
+// bounced where the bounce itself wasn't seen. A juggled ball only passes
+// through down there.
+let lowLog = [];
+function downOnFloor(now) {
+  if (groundY == null) return false;
+  if (ball && lastSeen === now) lowLog.push({ t: now, y: ball.y, low: ball.y + ball.d / 2 > groundY + (floorOff - 0.6) * unit() });
+  while (lowLog.length && now - lowLog[0].t > 300) lowLog.shift();
+  const ys = lowLog.map((q) => q.y);
+  return ball && lastSeen === now && lowLog.length >= 5 && now - lowLog[0].t >= 250 && lowLog.every((q) => q.low)
+    && Math.max(...ys) - Math.min(...ys) < ball.d * 0.5;
+}
 function bounced(turn) {
   if (groundY == null) return null;
   const W = FW(), H = FH(), bottom = turn.y + ball.d / 2, d = unit();
@@ -580,11 +593,16 @@ function bounced(turn) {
   for (const q of frames) {
     const fs = feetOf(q.p); if (!fs.length) continue;
     const c = path.length ? path.at(-1) : mid(foot);
-    path.push(fs.map(mid).sort((a, b) => Math.hypot(a.x - c.x, a.y - c.y) - Math.hypot(b.x - c.x, b.y - c.y))[0]);
+    path.push({ ...fs.map(mid).sort((a, b) => Math.hypot(a.x - c.x, a.y - c.y) - Math.hypot(b.x - c.x, b.y - c.y))[0], t: q.t });
   }
+  // A kicking foot goes up with the ball after the touch; a foot coming back
+  // down after a swing that missed doesn't.
+  const atTurn = path.reduce((a, q) => Math.abs(q.t - turn.t) < Math.abs(a.t - turn.t) ? q : a, path[0]);
+  let up = 0;
+  for (const q of path) if (q.t >= turn.t) up = Math.max(up, (atTurn.y - q.y) / d);
+  const lift = (groundY - Math.max(...foot.map((q) => q.y))) / d;
   let move = 0;
   for (const a of path) for (const b of path) move = Math.max(move, Math.hypot(a.x - b.x, a.y - b.y) / d);
-  const lift = (groundY - Math.max(...foot.map((q) => q.y))) / d;
   const kicking = gap < 0.7 && (move >= 0.25 || lift >= 0.3);
   // Clearly below the feet: down on the floor in front of them. A touch never
   // gets there, because the foot is under the ball.
@@ -625,7 +643,9 @@ function judge(now, people) {
   const p = people[0];
   const W = FW(), H = FH();
   if (p && poseFresh) poses.push({ t: now, p });
-  seenLog.push({ t: now, seen: !!p && poseFresh }); while (seenLog.length && now - seenLog[0].t > 1000) seenLog.shift();
+  // Seen = the pose model found a person this frame (a body in an unusual
+  // trick position may be set aside as not a usable pose but is still there).
+  seenLog.push({ t: now, seen: !!p && (poseFresh || rawPeople.length > 0) }); while (seenLog.length && now - seenLog[0].t > 1000) seenLog.shift();
   checkFacing(now, p);
   while (poses.length && now - poses[0].t > 500) poses.shift();
   const pt = (i) => p && p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null;
@@ -677,6 +697,7 @@ function judge(now, people) {
   // a ball rolling or bobbling at the feet doesn't start one.
   const turn = findTurn(now, phase === "live" ? 0.3 : 0.8);
   learnFloor(now);
+  if (phase === "live" && downOnFloor(now)) { end("Ground!", { x: ball.x, y: ball.y + ball.d / 2 }); return; }
   // Bounce: the ball came down on the floor and went back up with no foot
   // under it. Never a touch, and during a run it's a drop, right away.
   if (turn && p && turn.t - lastTouch > S.cooldown) {
@@ -695,6 +716,10 @@ function judge(now, people) {
   // A juggled ball keeps going up and down; one sitting on the ground (toe taps,
   // a foot resting on it) stays within about half a ball size (its box jiggles as feet cover it).
   const ys = heights.map((h) => h.y), bobbing = (Math.max(...ys) - Math.min(...ys)) / ball.d < 0.9;
+  // Near the floor (within about a ball of the feet), a ball glancing off a
+  // leg on its way down only pops up a little: a touch there has to lift it
+  // at least half a ball.
+  const nearFloor = turn && turn.y + ball.d / 2 > footLine - ball.d * 1.2;
   if (turn && p && turn.t - lastTouch > S.cooldown && (!onFloor || turn.rose >= 1) && !bobbing) {
     // In or near a hand lately: carried, not juggled.
     if (heldFor(600)) { lastTouch = turn.t; return; }
@@ -762,6 +787,7 @@ function judge(now, people) {
         phase = "live"; count = 0; atwCount = 0; toApp({ type: "start", mode });
       }
       count += 1; totalTouches += 1; stats.touches++;
+      touchTimes.push(turn.t); if (touchTimes.length > 20) touchTimes.shift();
       toApp({ type: "touch", count, part, time: turn.t / 1000,
         height: Number.isFinite(highest) ? Math.max(0, (turn.y - ball.d / 2 - highest) / ball.d) : null });
       log.push({ ...at, touch: count, by: body < reach ? "part" : "legs", raw: named[0]?.part ?? null });
@@ -884,7 +910,7 @@ function hideEnd() { $("banner").className = ""; }
 // heel or toe) lifted at least 55% of a leg is more than 0.3 ball sizes above
 // the ball's center and within 1.6 to either side. A new trick once the foot
 // has been off the top of the ball for 0.2 s.
-let atwCount = 0, atwTotal = 0, lastOver = -1e9, atwBuf = [];
+let atwCount = 0, atwTotal = 0, lastOver = -1e9, atwBuf = [], atwPending = [], touchTimes = [];
 const ATW_LEGS = [["left", [27, 29, 31]], ["right", [28, 30, 32]]];
 const ATW_DELAY = 450;
 function judgeAtw(now, people, found) {
@@ -892,9 +918,10 @@ function judgeAtw(now, people, found) {
     live: phase === "live", held: ball ? heldForAt(400, now) : false });
   while (atwBuf.length && now - atwBuf[0].t > ATW_DELAY + 1500) atwBuf.shift();
   for (let k = 0; k < atwBuf.length && now - atwBuf[k].t >= ATW_DELAY; k++) if (!atwBuf[k].done) judgeAtwFrame(k);
+  confirmAtw(now, false);
 }
 // At the end of a run, judge the frames still waiting.
-function flushAtw() { for (let k = 0; k < atwBuf.length; k++) if (!atwBuf[k].done) judgeAtwFrame(k); }
+function flushAtw() { for (let k = 0; k < atwBuf.length; k++) if (!atwBuf[k].done) judgeAtwFrame(k); confirmAtw(0, true); }
 function fillBall(k) {
   const buf = atwBuf, h = buf[k];
   if (h.ball) return h.ball;
@@ -947,18 +974,30 @@ function judgeAtwFrame(k) {
   const over = ATW_LEGS.filter(([, ids]) => ids.map(pt).some((f) => f && b.y - f.y > b.d * 0.3
     && Math.abs(f.x - b.x) < b.d * 1.6 && lowest - f.y >= leg * 0.55)).map(([side]) => side);
   if (!over.length) return;
-  if (now - lastOver > 200) {
+  if (now - lastOver > 200) atwPending.push({ t: now, leg: over[0], x: b.x, y: b.y });
+  lastOver = now;
+}
+// A trick only counts once the juggle goes on: a touch within 1.3 s after it
+// (a foot waved over a ball that then drops isn't a trick).
+const ATW_CONFIRM = 1300;
+function confirmAtw(now, final) {
+  atwPending = atwPending.filter((e) => {
+    if (!touchTimes.some((t) => t > e.t && t <= e.t + ATW_CONFIRM)) {
+      if (!final && now - e.t <= ATW_CONFIRM + 300) return true;
+      log.push({ t: +(e.t / 1000).toFixed(2), atwDropped: e.leg });
+      return false;
+    }
     atwCount += 1; atwTotal += 1;
-    toApp({ type: "atw", count: atwCount, leg: over[0], time: now / 1000 });
-    log.push({ t: +(now / 1000).toFixed(2), atw: atwCount, leg: over[0] });
+    toApp({ type: "atw", count: atwCount, leg: e.leg, time: e.t / 1000 });
+    log.push({ t: +(e.t / 1000).toFixed(2), atw: atwCount, leg: e.leg });
     if (phase === "live") {
       setCount(atwCount, true);
       navigator.vibrate?.(25);
-      effect("touch", b.x, b.y);
+      effect("touch", e.x, e.y);
       flashHint("Around the World!");
     }
-  }
-  lastOver = now;
+    return false;
+  });
 }
 
 // Called by the app.
@@ -967,7 +1006,7 @@ window.footy = {
   async flip() { S.facing = S.facing === "user" ? "environment" : "user"; await startCamera(); },
 };
 
-function reset() { count = 0; atwCount = 0; phase = "ready"; lastTouch = 0; setCount(0); hideEnd(); }
+function reset() { count = 0; atwCount = 0; atwPending = []; phase = "ready"; lastTouch = 0; setCount(0); hideEnd(); }
 
 // ---------- Drawing ----------
 const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
@@ -1198,7 +1237,10 @@ function step(now) {
     // A jump of several ball sizes is a different object: start a fresh path.
     if (ball && Math.hypot(found.x - ball.x, found.y - ball.y) > ball.d * 4) { trail = []; heights = []; }
     ball = found; lastSeen = now;
-    if (found.score >= S.minScore) ballSizes.push({ d: found.d, t: now });
+    // Sizes are learned from a ball that moves; a spare ball lying still in view
+    // (often nearer the camera, so bigger) must not set the size.
+    const movedBy = trail.length >= 1 ? Math.hypot(found.x - trail.at(-1).x, found.y - trail.at(-1).y) : 0;
+    if (found.score >= 0.25 && movedBy > found.d * 0.15) ballSizes.push({ d: found.d, t: now });
     trail.push({ x: found.x, y: found.y, t: now });
     if (trail.length > 20) trail.shift();
     heights.push({ y: found.y, t: now });
