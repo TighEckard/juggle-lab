@@ -999,8 +999,23 @@ const ATW_KNEE = { left: 25, right: 26 }, ATW_CONFIRM = 1600;
 const ATW_LEGS = [["left", [27, 29, 31]], ["right", [28, 30, 32]]];
 const ATW_DELAY = 450;
 function judgeAtw(now, people, found) {
-  atwBuf.push({ t: now, ball: found ? { x: found.x, y: found.y, d: found.d } : null, p: people[0] || null,
-    live: phase === "live", held: ball ? heldForAt(400, now) : false });
+  const cur = { t: now, ball: found ? { x: found.x, y: found.y, d: found.d } : null, p: people[0] || null,
+    live: phase === "live", held: ball ? heldForAt(400, now) : false };
+  // Slow frames (a phone at 5-10 fps): a foot passes over the ball in less than one
+  // frame gap, so fill the gap with in-between frames (pose and ball interpolated)
+  // at 30 fps spacing for the trick check.
+  const prev = atwBuf.at(-1);
+  if (prev && prev.p && cur.p && now - prev.t > 50 && now - prev.t < 600 && !params.has("noup")) {
+    for (let t = prev.t + 33.3; t < now - 16; t += 33.3) {
+      const f = (t - prev.t) / (now - prev.t);
+      const p = cur.p.map((q, i) => { const a = prev.p[i]; return a ? { x: a.x + (q.x - a.x) * f, y: a.y + (q.y - a.y) * f, z: q.z, visibility: Math.min(a.visibility, q.visibility) } : q; });
+      let ball = null;
+      if (prev.ball && cur.ball && Math.hypot(prev.ball.x - cur.ball.x, prev.ball.y - cur.ball.y) < 4 * prev.ball.d)
+        ball = { x: prev.ball.x + (cur.ball.x - prev.ball.x) * f, y: prev.ball.y + (cur.ball.y - prev.ball.y) * f, d: prev.ball.d + (cur.ball.d - prev.ball.d) * f };
+      atwBuf.push({ t, ball, p, live: cur.live, held: cur.held, virt: true });
+    }
+  }
+  atwBuf.push(cur);
   while (atwBuf.length && now - atwBuf[0].t > ATW_DELAY + 1500) atwBuf.shift();
   for (let k = 0; k < atwBuf.length && now - atwBuf[k].t >= ATW_DELAY; k++) if (!atwBuf[k].done) judgeAtwFrame(k);
   settleAtw(now);
@@ -1013,7 +1028,7 @@ function fillBall(k) {
   let a = k - 1, b = k + 1;
   while (a >= 0 && !buf[a].ball) a--;
   while (b < buf.length && !buf[b].ball) b++;
-  if (a < 0 || b >= buf.length || buf[b].t - buf[a].t > 450) return null;
+  if (a < 0 || b >= buf.length || buf[b].t - buf[a].t > 450 * slack()) return null;
   const A = buf[a].ball, B = buf[b].ball;
   if (Math.hypot(A.x - B.x, A.y - B.y) > 4 * A.d) return null;
   const f = (h.t - buf[a].t) / (buf[b].t - buf[a].t);
@@ -1067,7 +1082,7 @@ function judgeAtwFrame(k) {
 // Count waiting tricks that a touch has followed; drop the ones too old.
 function liftedAfter(t) {
   const at = atwBuf.filter((q) => q.ball && Math.abs(q.t - t) <= 70);
-  const seen = atwBuf.filter((q) => q.ball && q.t >= t - 70 && q.t <= t + 700);
+  const seen = atwBuf.filter((q) => q.ball && q.t >= t - 70 && q.t <= t + 700 + 70);
   if (!at.length || !seen.length) return false;
   return Math.max(...at.map((q) => q.ball.y)) - Math.min(...seen.map((q) => q.ball.y)) >= at[0].ball.d * 0.5;
 }
