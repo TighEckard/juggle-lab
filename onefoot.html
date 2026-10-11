@@ -226,6 +226,19 @@ function timed(name, fn) {
 // search, zoomed pose) and keep the essentials, so the picture stays live.
 // Eval runs on a loaded PC: judge slowness by the phone only (or force it with &slow=1).
 const slowDevice = () => params.has("slow") ? true : params.has("frames") ? false : perfMs.step > 100;
+// Speed tiers (the phone's WKWebView ran at 2-5 fps): 0 = everything; 1 = pose on every
+// 2nd frame and no periodic full-frame ball search (full frame only once the ball is
+// lost); 2 = pose on every 3rd frame as well. Chosen from the measured step time (with
+// hysteresis), or forced with &tier=N (also in evals, to measure the accuracy cost).
+let tierNow = 0;
+function perfTier() {
+  if (params.has("tier")) return +params.get("tier") || 0;
+  if (params.has("frames")) return 0;
+  const m = perfMs.step;
+  if (tierNow === 0 && m > 75) tierNow = 1; else if (tierNow === 1 && m > 150) tierNow = 2;
+  else if (tierNow === 2 && m < 110) tierNow = 1; else if (tierNow === 1 && m < 50) tierNow = 0;
+  return tierNow;
+}
 async function loadDetector() {
   detector?.close?.();
   const opts = (delegate) => ({
@@ -376,7 +389,7 @@ function findCandidates(people, now) {
   searchBox = zoomRegion(people, now);
   let cands = searchBox ? detectIn(searchBox) : [];
   // Whole frame every 4th frame, or whenever the zoomed look finds nothing.
-  if (!searchBox || (frameIndex % 4 === 0 && !slowDevice()) || !cands.some((c) => c.score >= S.minScore)) cands = cands.concat(detectIn(null));
+  if (!searchBox || (frameIndex % 4 === 0 && !slowDevice() && perfTier() === 0) || !cands.some((c) => c.score >= S.minScore)) cands = cands.concat(detectIn(null));
   return cands;
 }
 
@@ -874,7 +887,7 @@ function sendRunLog(reason) {
   try {
     const events = log.slice(-400);
     const text = JSON.stringify({ v: 1, reason, count, ...(atwMode ? { atw: atwCount } : {}), mode: params.get("mode") || "classic",
-      perf: { fps: fpsTimes.length, ms: Object.fromEntries(Object.entries(perfMs).map(([k, v]) => [k, Math.round(v)])), delegates }, events, trace: runTrace });
+      perf: { fps: fpsTimes.length, ms: Object.fromEntries(Object.entries(perfMs).map(([k, v]) => [k, Math.round(v)])), delegates, tier: perfTier() }, events, trace: runTrace });
     toApp({ type: "runlog", text: text.length > 190000 ? text.slice(0, 190000) : text });
   } catch {}
 }
@@ -1303,13 +1316,15 @@ function zoomedPose(now) {
 }
 function step(now) { return timed("step", () => stepInner(now)); }
 function stepInner(now) {
-  rawPeople = timed("pose", () => pose.detectForVideo(src, now)).landmarks || [];
-  let people = rawPeople.filter(isRealBody);
+  const every = perfTier() + 1;   // pose on every 1st / 2nd / 3rd frame
+  const reuse = every > 1 && frameIndex % every !== 0 && lastPeople.people.length && now - lastPeople.t < 400 * Math.max(1, slack());
+  if (!reuse) rawPeople = timed("pose", () => pose.detectForVideo(src, now)).landmarks || [];
+  let people = reuse ? lastPeople.people : rawPeople.filter(isRealBody);
   // Small or just lost: try the zoomed look (it sees a small player's feet much better).
-  const z = zoomedPose(now);
+  const z = reuse ? null : zoomedPose(now);
   if (z && (!people.length || people.every((p) => Math.hypot(p[23].x - z[23].x, p[23].y - z[23].y) < 0.05))) people = [z, ...people.slice(1)];
   else if (z && !people.length) people = [z];
-  poseFresh = people.length > 0;
+  poseFresh = people.length > 0 && !reuse;
   if (poseFresh) lastPeople = { t: now, people };
   else if (now - lastPeople.t < 200) people = lastPeople.people;
   sortPlayers(people, now);
@@ -1354,7 +1369,7 @@ function loop() {
     $("ballchip").style.color = found ? "var(--accent)" : "var(--text)";
     if (params.has("app") && now - lastPerfPost > 3000) {
       lastPerfPost = now;
-      toApp({ type: "perf", fps: fpsTimes.length, ms: Object.fromEntries(Object.entries(perfMs).map(([k, v]) => [k, Math.round(v)])), delegates, slow: slowDevice() });
+      toApp({ type: "perf", fps: fpsTimes.length, ms: Object.fromEntries(Object.entries(perfMs).map(([k, v]) => [k, Math.round(v)])), delegates, slow: slowDevice(), tier: perfTier() });
     }
     if (S.debug) {
       $("status").textContent =
