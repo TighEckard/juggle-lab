@@ -50,7 +50,8 @@
   @keyframes shake { 0%, 100% { transform: none; } 12% { transform: translateX(-16px) rotate(-3deg); }
     28% { transform: translateX(14px) rotate(2deg); } 44% { transform: translateX(-10px); } 60% { transform: translateX(7px); }
     76% { transform: translateX(-3px); } }
-  #hint { font: 700 17px/1.3 -apple-system, system-ui, sans-serif; color: rgba(255,255,255,.85); min-height: 22px;
+  #hint { font: 700 clamp(14px, 4.4vw, 17px)/1.3 -apple-system, system-ui, sans-serif; color: rgba(255,255,255,.85); min-height: 22px;
+    max-width: calc(100vw - 32px - env(safe-area-inset-left) - env(safe-area-inset-right)); text-align: center; text-wrap: balance;
     text-shadow: 0 2px 10px rgba(0,0,0,.8); }
   #hint.pulse { animation: breathe 1.6s ease-in-out infinite; }
   @keyframes breathe { 50% { opacity: .45; } }
@@ -58,21 +59,22 @@
   #banner { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0; }
   #banner.show { opacity: 1; animation: bannerOut .4s ease-in 2.2s forwards; }
   .app #banner.show { animation-delay: 3.6s; }
-  #banner .plate { text-align: center; padding: 22px 30px 24px; border-radius: 32px; background: rgba(0,0,0,.62);
+  #banner .plate { text-align: center; padding: 22px clamp(16px, 5vw, 30px) 24px; border-radius: 32px;
+    max-width: calc(100vw - 32px - env(safe-area-inset-left) - env(safe-area-inset-right)); box-sizing: border-box; background: rgba(0,0,0,.62);
     border: 2px solid rgba(255,149,0,.9); box-shadow: 0 0 60px rgba(255,149,0,.35), 0 20px 60px rgba(0,0,0,.6);
-    backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); min-width: 260px; }
+    backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); min-width: min(260px, 80vw); }
   #banner.show .plate { animation: slam .5s cubic-bezier(.2,1.5,.35,1); }
-  #banner .kicker { font: 800 14px/1 -apple-system, system-ui, sans-serif; letter-spacing: .18em; text-transform: uppercase;
+  #banner .kicker { font: 800 clamp(11px, 3.4vw, 14px)/1 -apple-system, system-ui, sans-serif; letter-spacing: .18em; text-transform: uppercase;
     color: var(--accent); min-height: 14px; }
-  #banner .title { font: 900 68px/1 ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif;
+  #banner .title { font: 900 clamp(34px, 13vw, 68px)/1.02 ui-rounded, "SF Pro Rounded", -apple-system, system-ui, sans-serif;
     letter-spacing: -.02em; text-transform: uppercase; color: #fff; margin: 8px 0 10px;
-    text-shadow: 0 0 30px rgba(255,149,0,.55); white-space: nowrap; }
+    text-shadow: 0 0 30px rgba(255,149,0,.55); white-space: normal; overflow-wrap: anywhere; text-wrap: balance; }
   #banner.ground .title, #banner.wrong .title { color: var(--accent); text-shadow: 0 0 34px rgba(255,149,0,.6); }
-  #banner .sub { font: 800 22px/1 ui-rounded, -apple-system, system-ui, sans-serif; color: rgba(255,255,255,.9);
+  #banner .sub { font: 800 clamp(16px, 5vw, 22px)/1 ui-rounded, -apple-system, system-ui, sans-serif; color: rgba(255,255,255,.9);
     font-variant-numeric: tabular-nums; }
   @keyframes slam { 0% { transform: scale(2.1); opacity: 0; } 60% { transform: scale(.94); opacity: 1; } 100% { transform: scale(1); } }
   @keyframes bannerOut { to { opacity: 0; transform: scale(.96); } }
-  @media (max-width: 380px) { #banner .title { font-size: 54px; } #count { font-size: 112px; } }
+  @media (max-width: 380px) { #count { font-size: 112px; } }
   /* A flash of orange light around the edges when a run ends. */
   #flash { position: fixed; inset: 0; pointer-events: none; opacity: 0;
     background: radial-gradient(ellipse at center, transparent 45%, rgba(255,149,0,.55) 100%); }
@@ -1052,9 +1054,9 @@ function drawEffects(lw) {
     const s = (t - e.t) / 1000, d = e.d;
     ctx.save();
     if (e.kind === "touch") {
-      const a = s / 0.5;
+      const a = s / 0.3;
       if (a < 1) {
-        ctx.strokeStyle = `rgba(255,149,0,${1 - a})`; ctx.lineWidth = lw * 3 * (1 - a) + 1;
+        ctx.strokeStyle = `rgba(255,149,0,${(1 - a) * 0.8})`; ctx.lineWidth = lw * 1.6 * (1 - a) + 0.8;
         ctx.beginPath(); ctx.arc(e.x, e.y, d * (0.6 + a * 1.6), 0, Math.PI * 2); ctx.stroke();
       }
     } else if (e.kind === "ground") {
@@ -1120,27 +1122,29 @@ function draw(cands, people, now) {
     for (const c of cands) ctx.strokeRect(c.box.originX, c.box.originY, c.box.width, c.box.height);
   }
 
-  // Skeleton: white bones with an orange glow, legs fading to orange feet.
+  // Skeleton: thin, semi-transparent bones with a soft glow (about 2 px), legs
+  // fading to orange feet, so the picture underneath stays easy to see.
+  const sk = Math.max(1.2, H / 640);
   for (const p of people.slice(0, 1)) {
     const P = (i) => p[i] && p[i].visibility > 0.4 ? [p[i].x * W, p[i].y * H] : null;
     ctx.save();
-    ctx.shadowColor = "rgba(255,149,0,.95)"; ctx.shadowBlur = lw * 7;
+    ctx.shadowColor = "rgba(255,149,0,.5)"; ctx.shadowBlur = sk * 4;
     for (const [a, b] of BONES) {
       const A = P(a), B = P(b);
       if (!A || !B) continue;
       const lower = a >= 23;
       const g = ctx.createLinearGradient(A[0], A[1], B[0], B[1]);
-      g.addColorStop(0, "rgba(255,255,255,.95)");
-      g.addColorStop(1, lower && b >= 25 ? "rgba(255,159,10,.98)" : "rgba(255,255,255,.95)");
-      ctx.strokeStyle = g; ctx.lineWidth = lw * (lower ? 2.2 : 1.6);
+      g.addColorStop(0, "rgba(255,255,255,.62)");
+      g.addColorStop(1, lower && b >= 25 ? "rgba(255,159,10,.72)" : "rgba(255,255,255,.62)");
+      ctx.strokeStyle = g; ctx.lineWidth = sk * (lower ? 1.4 : 1.1);
       ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.stroke();
     }
     ctx.restore();
     const head = P(0), sl = P(11), sr = P(12);
     if (head && sl && sr) {
       const r = Math.hypot(sl[0] - sr[0], sl[1] - sr[1]) * 0.32;
-      ctx.save(); ctx.shadowColor = "rgba(255,149,0,.95)"; ctx.shadowBlur = lw * 7;
-      ctx.strokeStyle = "rgba(255,255,255,.95)"; ctx.lineWidth = lw * 1.6;
+      ctx.save(); ctx.shadowColor = "rgba(255,149,0,.5)"; ctx.shadowBlur = sk * 4;
+      ctx.strokeStyle = "rgba(255,255,255,.65)"; ctx.lineWidth = sk * 1.1;
       ctx.beginPath(); ctx.arc(head[0], head[1], r, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
     }
     // Hands: red, so players see they're watched; a ring at each hand, bolder
@@ -1150,16 +1154,16 @@ function draw(cands, people, now) {
       if (q.length < 2) continue;
       const hx = q.reduce((a, v) => a + v[0], 0) / q.length, hy = q.reduce((a, v) => a + v[1], 0) / q.length;
       ctx.save();
-      ctx.strokeStyle = "#ff3b30"; ctx.fillStyle = "#ff3b30"; ctx.lineWidth = lw * (holdingNow ? 2.6 : 1.6);
-      ctx.shadowColor = "#ff3b30"; ctx.shadowBlur = lw * (holdingNow ? 12 : 4);
-      for (const v of q) { ctx.beginPath(); ctx.arc(v[0], v[1], lw * 1.3, 0, Math.PI * 2); ctx.fill(); }
-      ctx.beginPath(); ctx.arc(hx, hy, lw * 5, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+      ctx.strokeStyle = holdingNow ? "#ff3b30" : "rgba(255,59,48,.75)"; ctx.fillStyle = "rgba(255,59,48,.8)"; ctx.lineWidth = sk * (holdingNow ? 1.8 : 1.1);
+      ctx.shadowColor = "#ff3b30"; ctx.shadowBlur = sk * (holdingNow ? 8 : 3);
+      for (const v of q) { ctx.beginPath(); ctx.arc(v[0], v[1], sk * 1, 0, Math.PI * 2); ctx.fill(); }
+      ctx.beginPath(); ctx.arc(hx, hy, sk * 3.6, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
     }
     for (const i of [11, 12, 13, 14, 23, 24, 25, 26, 27, 28, 31, 32]) {
       const J = P(i); if (!J) continue;
       const foot = i >= 27;
-      ctx.fillStyle = foot ? "#ff9500" : "#fff";
-      ctx.beginPath(); ctx.arc(J[0], J[1], lw * (foot ? 2.6 : 1.8), 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = foot ? "rgba(255,149,0,.85)" : "rgba(255,255,255,.75)";
+      ctx.beginPath(); ctx.arc(J[0], J[1], sk * (foot ? 1.9 : 1.4), 0, Math.PI * 2); ctx.fill();
       if (S.debug && foot && ball && (i === 31 || i === 32)) {
         ctx.strokeStyle = "rgba(255,149,0,.25)"; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(J[0], J[1], ball.d * S.contact, 0, Math.PI * 2); ctx.stroke();
@@ -1169,14 +1173,14 @@ function draw(cands, people, now) {
 
 
   // Ball: a fading comet trail and a glowing ring.
-  for (let i = 1; i < trail.length; i++) {
-    const f = i / trail.length;
-    ctx.strokeStyle = `rgba(255,149,0,${f * .85})`; ctx.lineWidth = lw * (0.5 + 3 * f);
+  for (let i = Math.max(1, trail.length - 8); i < trail.length; i++) {
+    const f = (i - Math.max(1, trail.length - 8)) / 8;
+    ctx.strokeStyle = `rgba(255,149,0,${f * .5})`; ctx.lineWidth = lw * (0.3 + 1.4 * f);
     ctx.beginPath(); ctx.moveTo(trail[i - 1].x, trail[i - 1].y); ctx.lineTo(trail[i].x, trail[i].y); ctx.stroke();
   }
   if (ball && now - lastSeen < 300) {
-    ctx.save(); ctx.shadowColor = "#ff9500"; ctx.shadowBlur = lw * 8;
-    ctx.strokeStyle = "#ff9500"; ctx.lineWidth = lw * 1.8;
+    ctx.save(); ctx.shadowColor = "rgba(255,149,0,.6)"; ctx.shadowBlur = lw * 3;
+    ctx.strokeStyle = "#ff9500"; ctx.lineWidth = lw * 0.9;
     ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.d * 0.62, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
 
     if (S.debug) {
