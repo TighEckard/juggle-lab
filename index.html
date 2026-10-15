@@ -551,7 +551,7 @@ function learnFloor(now) {
 // of the floor) and nearly level for 0.25 s: it rolled, was dribbled, or
 // bounced where the bounce itself wasn't seen. A juggled ball only passes
 // through down there.
-let lowLog = [], floorPending = null;
+let lowLog = [], floorPending = null, touchTimes = [];
 const touchSince = (t) => touchTimes.some((x) => x >= t - 100);
 function downOnFloor(now) {
   if (groundY == null) return false;
@@ -808,6 +808,7 @@ function judge(now, people) {
       }
       count += 1; totalTouches += 1; stats.touches++;
       touchTimes.push(turn.t); if (touchTimes.length > 20) touchTimes.shift();
+      if (atwMode) atwTouches.push(turn.t);
       toApp({ type: "touch", count, part, time: turn.t / 1000,
         height: Number.isFinite(highest) ? Math.max(0, (turn.y - ball.d / 2 - highest) / ball.d) : null });
       log.push({ ...at, touch: count, by: body < reach ? "part" : "legs", raw: named[0]?.part ?? null });
@@ -931,18 +932,32 @@ function hideEnd() { $("banner").className = ""; }
 // heel or toe) lifted at least 55% of a leg is more than 0.3 ball sizes above
 // the ball's center and within 1.6 to either side. A new trick once the foot
 // has been off the top of the ball for 0.2 s.
-let atwCount = 0, atwTotal = 0, lastOver = -1e9, atwBuf = [], atwPending = [], touchTimes = [];
+// Blurred fast legs: the pose model often misplaces the foot, but the knee is
+// reliable. While the ball is hidden (its spot filled from its flight), a leg
+// also counts when its knee is 0.7 ball sizes above the ball and one of its
+// foot points is at about the ball's height (no more than 0.3 below its
+// center) and close to it sideways.
+// A trick only counts once the juggle goes on: a touch within 1.6 s after it
+// that sends the ball back up (half a ball or more), so a failed try (ball
+// falls to the floor, maybe off a leg) never counts. A "trick" seen while the
+// ball was hidden right before a touch (within 0.15 s) was the kicking foot
+// covering the ball, not a trick.
+let atwCount = 0, atwTotal = 0, lastOver = -1e9, atwBuf = [], atwPending = [], atwTouches = [];
+const ATW_KNEE = { left: 25, right: 26 }, ATW_CONFIRM = 1600;
+const ATWQ = new URLSearchParams(location.search);   // test switches: &atwearly=0, &atwgap=ms
+const ATW_EARLY = ATWQ.get("atwearly") !== "0", ATW_GAP = +(ATWQ.get("atwgap") || 200);
+const ATW_EARLY_CONFIRM = +(ATWQ.get("atwearlyms") || 800);
 const ATW_LEGS = [["left", [27, 29, 31]], ["right", [28, 30, 32]]];
 const ATW_DELAY = 450;
 function judgeAtw(now, people, found) {
   atwBuf.push({ t: now, ball: found ? { x: found.x, y: found.y, d: found.d } : null, p: people[0] || null,
-    live: phase === "live", held: ball ? heldForAt(400, now) : false });
+    live: phase === "live", ready: phase === "ready", held: ball ? heldForAt(400, now) : false });
   while (atwBuf.length && now - atwBuf[0].t > ATW_DELAY + 1500) atwBuf.shift();
   for (let k = 0; k < atwBuf.length && now - atwBuf[k].t >= ATW_DELAY; k++) if (!atwBuf[k].done) judgeAtwFrame(k);
-  confirmAtw(now, false);
+  settleAtw(now);
 }
 // At the end of a run, judge the frames still waiting.
-function flushAtw() { for (let k = 0; k < atwBuf.length; k++) if (!atwBuf[k].done) judgeAtwFrame(k); confirmAtw(0, true); }
+function flushAtw() { for (let k = 0; k < atwBuf.length; k++) if (!atwBuf[k].done) judgeAtwFrame(k); settleAtw(Infinity, true); }
 function fillBall(k) {
   const buf = atwBuf, h = buf[k];
   if (h.ball) return h.ball;
@@ -980,7 +995,10 @@ function judgeAtwFrame(k) {
   const h = atwBuf[k]; h.done = true;
   const b = fillBall(k); h.fb = b;
   const p = h.p, now = h.t;
-  if (!h.live || !p || !b || h.held) return;
+  // Also before the run has started: players often go straight from the
+  // kick-up into the trick. Such a trick needs the touch that starts the run
+  // within 0.8 s (a lifting one), and only the last one before it counts.
+  if (!(h.live || (h.ready && ATW_EARLY)) || !p || !b || h.held) return;
   const W = FW(), H = FH();
   const pt = (i) => p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null;
   const tops = atwBuf.slice(0, k + 1).filter((q) => q.fb && now - q.t < 600).map((q) => q.fb.y - q.fb.d / 2);
@@ -992,33 +1010,50 @@ function judgeAtwFrame(k) {
   if (legLength <= 0 || Math.hypot(b.x - hip.x, b.y - hip.y) > legLength * 1.3) return;
   const lowest = Math.max(...FOOT.map(pt).filter(Boolean).map((q) => q.y)), leg = lowest - hip.y;
   if (lowest - b.y < leg * 0.3) return;
-  const over = ATW_LEGS.filter(([, ids]) => ids.map(pt).some((f) => f && b.y - f.y > b.d * 0.3
-    && Math.abs(f.x - b.x) < b.d * 1.6 && lowest - f.y >= leg * 0.55)).map(([side]) => side);
+  const lifted = (f) => f && Math.abs(f.x - b.x) < b.d * 1.6 && lowest - f.y >= leg * 0.55;
+  const over = ATW_LEGS.filter(([side, ids]) => ids.map(pt).some((f) => lifted(f) && b.y - f.y > b.d * 0.3)
+    || (!h.ball && (pt(ATW_KNEE[side])?.y ?? Infinity) < b.y - b.d * 0.7 && ids.map(pt).some((f) => lifted(f) && b.y - f.y > -b.d * 0.3)))
+    .map(([side]) => side);
   if (!over.length) return;
-  if (now - lastOver > 200) atwPending.push({ t: now, leg: over[0], x: b.x, y: b.y });
+  if (now - lastOver > ATW_GAP) {
+    if (!h.live) atwPending = atwPending.filter((q) => !q.early);
+    atwPending.push({ t: now, leg: over[0], x: b.x, y: b.y, hidden: !h.ball, last: now, early: !h.live });
+  }
+  else if (atwPending.length) atwPending.at(-1).last = now;
   lastOver = now;
 }
-// A trick only counts once the juggle goes on: a touch within 1.3 s after it
-// (a foot waved over a ball that then drops isn't a trick).
-const ATW_CONFIRM = 1300;
-function confirmAtw(now, final) {
-  atwPending = atwPending.filter((e) => {
-    if (!touchTimes.some((t) => t > e.t && t <= e.t + ATW_CONFIRM)) {
-      if (!final && now - e.t <= ATW_CONFIRM + 300) return true;
-      log.push({ t: +(e.t / 1000).toFixed(2), atwDropped: e.leg });
+// Count waiting tricks that a touch has followed; drop the ones too old.
+function liftedAfter(t) {
+  const at = atwBuf.filter((q) => q.ball && Math.abs(q.t - t) <= 70);
+  const seen = atwBuf.filter((q) => q.ball && q.t >= t - 70 && q.t <= t + 700);
+  if (!at.length || !seen.length) return false;
+  return Math.max(...at.map((q) => q.ball.y)) - Math.min(...seen.map((q) => q.ball.y)) >= at[0].ball.d * 0.5;
+}
+function settleAtw(now, final) {
+  atwPending = atwPending.filter((q) => {
+    // Decide once the frames just after a touch close behind it are judged too.
+    if (!final && now - q.t < ATW_DELAY + 250) return true;
+    const after = atwTouches.filter((t) => t > q.t && t <= q.t + (q.early ? ATW_EARLY_CONFIRM : ATW_CONFIRM));
+    // (Unless the foot is still over the ball after that touch: then the
+    // "touch" was the ball turning under the circling foot.)
+    if (q.hidden && after.some((t) => t <= q.t + 150 && q.last <= t)) return false;
+    if (after.some(liftedAfter)) {
+      atwCount += 1; atwTotal += 1;
+      toApp({ type: "atw", count: atwCount, leg: q.leg, time: q.t / 1000 });
+      log.push({ t: +(q.t / 1000).toFixed(2), atw: atwCount, leg: q.leg });
+      if (phase === "live") {
+        setCount(atwCount, true);
+        navigator.vibrate?.(25);
+        effect("touch", q.x, q.y);
+        flashHint("Around the World!");
+      }
       return false;
     }
-    atwCount += 1; atwTotal += 1;
-    toApp({ type: "atw", count: atwCount, leg: e.leg, time: e.t / 1000 });
-    log.push({ t: +(e.t / 1000).toFixed(2), atw: atwCount, leg: e.leg });
-    if (phase === "live") {
-      setCount(atwCount, true);
-      navigator.vibrate?.(25);
-      effect("touch", e.x, e.y);
-      flashHint("Around the World!");
-    }
+    if (!final && now - q.t <= ATW_CONFIRM + 800) return true;
+    log.push({ t: +(q.t / 1000).toFixed(2), atwDropped: q.leg });
     return false;
   });
+  atwTouches = atwTouches.filter((t) => now - t < ATW_CONFIRM + ATW_DELAY + 1500);
 }
 
 // Called by the app.
@@ -1027,7 +1062,7 @@ window.footy = {
   async flip() { S.facing = S.facing === "user" ? "environment" : "user"; await startCamera(); },
 };
 
-function reset() { count = 0; atwCount = 0; atwPending = []; floorPending = null; phase = "ready"; lastTouch = 0; setCount(0); hideEnd(); }
+function reset() { count = 0; atwCount = 0; atwPending = []; atwTouches = []; floorPending = null; phase = "ready"; lastTouch = 0; setCount(0); hideEnd(); }
 
 // ---------- Drawing ----------
 const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
@@ -1410,6 +1445,7 @@ async function evaluate() {
       z: p ? K.map((i) => Math.round(p[i].z * 100)) : null,
       s: p ? [0, 11, 12].map((i) => [Math.round(p[i].x * FW()), Math.round(p[i].y * FH()), Math.round(p[i].visibility * 100)]) : null,
       h: ball && heldForAt(400, i * 1000 / fps + 1) ? 1 : 0,
+      ph: phase === "live" ? 1 : 0,
       r: rawPeople.map((q) => [23, 24, 25, 26, 27, 28, 31, 32, 29, 30, 15, 16, 11, 12].map((j) => [Math.round(q[j].x * FW()), Math.round(q[j].y * FH()), Math.round(q[j].visibility * 100)])),
       hands: p ? [15, 16, 17, 18, 19, 20].map((i) => [Math.round(p[i].x * FW()), Math.round(p[i].y * FH()), Math.round(p[i].visibility * 100)]) : null,
       sb: box, c: cands.filter((c) => c.score >= 0.03).map((c) => [c.x, c.y, c.d, c.score * 100].map(Math.round)) });
