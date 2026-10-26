@@ -949,6 +949,9 @@ const ATW_EARLY = ATWQ.get("atwearly") !== "0", ATW_GAP = +(ATWQ.get("atwgap") |
 const ATW_EARLY_CONFIRM = +(ATWQ.get("atwearlyms") || 800);
 const ATW_LEGS = [["left", [27, 29, 31]], ["right", [28, 30, 32]]];
 const ATW_DELAY = 450;
+// Below ~20 fps the frame where the foot is highest over the ball is often
+// skipped, so the foot only has to clear the ball by 0.2 ball sizes (0.3 above).
+const ATW_ABOVE = 0.3, ATW_ABOVE_SLOW = +(ATWQ.get("atwslow") || 0.2);
 function judgeAtw(now, people, found) {
   atwBuf.push({ t: now, ball: found ? { x: found.x, y: found.y, d: found.d } : null, p: people[0] || null,
     live: phase === "live", ready: phase === "ready", held: ball ? heldForAt(400, now) : false });
@@ -1011,7 +1014,9 @@ function judgeAtwFrame(k) {
   const lowest = Math.max(...FOOT.map(pt).filter(Boolean).map((q) => q.y)), leg = lowest - hip.y;
   if (lowest - b.y < leg * 0.3) return;
   const lifted = (f) => f && Math.abs(f.x - b.x) < b.d * 1.6 && lowest - f.y >= leg * 0.55;
-  const over = ATW_LEGS.filter(([side, ids]) => ids.map(pt).some((f) => lifted(f) && b.y - f.y > b.d * 0.3)
+  const lo = Math.max(0, k - 3), hi = Math.min(atwBuf.length - 1, k + 3);
+  const above = hi > lo && (atwBuf[hi].t - atwBuf[lo].t) / (hi - lo) > 50 ? ATW_ABOVE_SLOW : ATW_ABOVE;
+  const over = ATW_LEGS.filter(([side, ids]) => ids.map(pt).some((f) => lifted(f) && b.y - f.y > b.d * above)
     || (!h.ball && (pt(ATW_KNEE[side])?.y ?? Infinity) < b.y - b.d * 0.7 && ids.map(pt).some((f) => lifted(f) && b.y - f.y > -b.d * 0.3)))
     .map(([side]) => side);
   if (!over.length) return;
