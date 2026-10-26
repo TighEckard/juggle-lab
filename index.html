@@ -473,13 +473,39 @@ function report() {
 // sizes. Image y grows downward.
 function findTurn(now, minRise = 0.3) {
   const recent = trail.filter((p) => now - p.t < 600 && p.t > lastTouch);
-  if (recent.length < 3) return null;
+  if (recent.length < 3) return frameGap >= 80 ? findKick(now, minRise) : null;
   let low = 0;
   for (let i = 1; i < recent.length; i++) if (recent[i].y > recent[low].y) low = i;
-  if (low === 0 || low === recent.length - 1) return null;
+  if (low === 0 || low === recent.length - 1) return frameGap >= 80 ? findKick(now, minRise) : null;
   const fell = recent[low].y - Math.min(...recent.slice(0, low).map((p) => p.y));
   const rose = recent[low].y - Math.min(...recent.slice(low + 1).map((p) => p.y));
-  return fell >= ball.d * 0.3 && rose >= ball.d * minRise ? { ...recent[low], rose: rose / ball.d, fell: fell / ball.d } : null;
+  if (fell >= ball.d * 0.3 && rose >= ball.d * minRise) return { ...recent[low], rose: rose / ball.d, fell: fell / ball.d };
+  return frameGap >= 80 ? findKick(now, minRise) : null;
+}
+
+// Slow frames (under ~12 a second, common on phones): a juggle is only two or
+// three frames, so the ball's lowest point is usually between two of them and
+// the fall and rise look small. A touch still shows as a kink in the ball's
+// path: in flight gravity makes it fall faster frame after frame, while a touch
+// turns it upward. Its speeds just before and after give the touch, and how
+// high it fell and rose (v² / 2g, in ball sizes; a ball 22 cm across falls at
+// about 45 ball sizes per second²).
+const GRAVITY = 45;
+function findKick(now, minRise) {
+  const pts = trail.filter((p) => now - p.t < frameGap * 3.5 && p.t > lastTouch).slice(-3);
+  if (pts.length < 3) return null;
+  const [a, b, c] = pts, d = ball.d;
+  if (b.t - a.t > frameGap * 2.5 || c.t - b.t > frameGap * 2.5) return null;
+  const v1 = (b.y - a.y) / d / ((b.t - a.t) / 1000), v2 = (c.y - b.y) / d / ((c.t - b.t) / 1000);   // + = down
+  const dt = (c.t - a.t) / 2000;
+  if (v1 - v2 + GRAVITY * dt < 12 || v2 > -2) return null;   // no upward kick, or not going up after it
+  // Speeds at the middle frame (gravity added back for the half frame either side).
+  const down = Math.max(0, v1 + GRAVITY * (b.t - a.t) / 2000), up = Math.max(0, -v2 + GRAVITY * (c.t - b.t) / 2000);
+  const fell = Math.max(b.y - a.y, 0) / d + down ** 2 / (2 * GRAVITY);
+  const rose = Math.max(b.y - c.y, 0) / d + up ** 2 / (2 * GRAVITY);
+  // The kick itself shows something hit the ball, so the rise needed to start a
+  // run (there to skip a ball bobbling at the feet) is relaxed to half a ball.
+  return rose >= Math.min(minRise, 0.5) ? { ...b, rose, fell, kink: true } : null;
 }
 
 
@@ -532,7 +558,7 @@ function unit() {
 function learnFloor(now) {
   if (!ball || groundY == null || now - lastSeen > 60) return;
   const recent = trail.filter((q) => now - q.t < 300);
-  if (recent.length < 4) return;
+  if (recent.length < need(4, 300)) return;
   const ys = recent.map((q) => q.y), still = (Math.max(...ys) - Math.min(...ys)) / ball.d < 0.2;
   const bottom = ball.y + ball.d / 2;
   const u = unit();
@@ -556,9 +582,9 @@ const touchSince = (t) => touchTimes.some((x) => x >= t - 100);
 function downOnFloor(now) {
   if (groundY == null) return false;
   if (ball && lastSeen === now) lowLog.push({ t: now, y: ball.y, low: ball.y + ball.d / 2 > groundY + (floorOff - 0.6) * unit() });
-  while (lowLog.length && now - lowLog[0].t > 300) lowLog.shift();
+  while (lowLog.length && now - lowLog[0].t > Math.max(300, frameGap * 2.5)) lowLog.shift();
   const ys = lowLog.map((q) => q.y);
-  return ball && lastSeen === now && lowLog.length >= 5 && now - lowLog[0].t >= 250 && lowLog.every((q) => q.low)
+  return ball && lastSeen === now && lowLog.length >= need(5, 250) && now - lowLog[0].t >= 250 && lowLog.every((q) => q.low)
     && Math.max(...ys) - Math.min(...ys) < ball.d * 0.5;
 }
 function bounced(turn) {
@@ -624,7 +650,7 @@ function heldForAt(ms, at) {
   const r = inHand.filter((h) => at - h.t < ms && h.t <= at);
   // Enough of the stretch seen to judge (a ball lost behind fingers for a few
   // frames doesn't let a short sample decide).
-  if (r.length < 5 || r.at(-1).t - r[0].t < ms * 0.6 || at - r.at(-1).t > 100) return false;
+  if (r.length < need(5, ms * 0.6) || r.at(-1).t - r[0].t < ms * 0.6 || at - r.at(-1).t > 100) return false;
   const span = (pts) => { let m = 0; for (const a of pts) for (const b of pts) m = Math.max(m, Math.hypot(a.x - b.x, a.y - b.y)); return m; };
   const near = r.filter((h) => h.sides[0] || h.sides[1]);
   const mid = (h) => { const s2 = h.sides.filter(Boolean); return { x: s2.reduce((a, q) => a + q.x, 0) / s2.length, y: s2.reduce((a, q) => a + q.y, 0) / s2.length }; };
@@ -691,7 +717,7 @@ function judge(now, people) {
   // Held for 0.7 s, three frames running (a ball flying past a hand can look
   // held for a frame or two): the run ends.
   heldStreak = heldFor(700) ? heldStreak + 1 : 0;
-  if (phase === "live" && heldStreak >= 3) { end("Hand!", { x: ball.x, y: ball.y }); return; }
+  if (phase === "live" && heldStreak >= need(3, 150)) { end("Hand!", { x: ball.x, y: ball.y }); return; }
 
   // Touch: the ball fell, bottomed out, and is going back up, and its lowest
   // point was within reach of a foot (or knee/head). Hovering near a foot
@@ -803,7 +829,7 @@ function judge(now, people) {
         // before the touch means it was carried there.
         if (inHand.some((h) => h.t > turn.t - 600 && h.t <= turn.t + 50 && heldForAt(600, h.t))) { log.push({ ...at, skip: "fromHands" }); return; }
         const recent = seenLog.filter((q) => now - q.t < 600);
-        if (recent.length < 4 || recent.filter((q) => q.seen).length < recent.length * 0.7) { log.push({ ...at, skip: "notInView" }); return; }
+        if (recent.length < need(4, 600) || recent.filter((q) => q.seen).length < recent.length * 0.7) { log.push({ ...at, skip: "notInView" }); return; }
         phase = "live"; count = 0; atwCount = 0; toApp({ type: "start", mode });
       }
       count += 1; totalTouches += 1; stats.touches++;
@@ -832,7 +858,7 @@ function judge(now, people) {
     const u = unit();
     const awayFromFeet = feetNow.length && Math.min(...feetNow.map((f) => Math.hypot(f.x - ball.x, f.y - bottom))) > u * 2;
     const atGround = bottom > groundY - u * S.groundTol || (awayFromFeet && bottom > groundY - u * 1.5);
-    const recent = trail.filter((t) => now - t.t < 120);
+    const recent = trail.filter((t) => now - t.t < Math.max(120, frameGap * 1.5));
     const vy = recent.length > 1 ? (recent.at(-1).y - recent[0].y) / Math.max(1, recent.at(-1).t - recent[0].t) * 1000 : 0;
     const seen = now - lastSeen < 60 && recent.length >= 2;
     const settled = seen && atGround && Math.abs(vy) < ball.d * 2;
@@ -1285,7 +1311,14 @@ function zoomedPose(now) {
   const mapped = found.map((q) => ({ ...q, x: (x0 + q.x * side) / W, y: (y0 + q.y * side) / H }));
   return isRealBody(mapped) ? mapped : null;
 }
+// How far apart frames come. Phones often run the tracker at 5-10 frames a
+// second, not 30, so rules that wait for "N frames" use need(), which asks for
+// fewer frames when they come slowly (the same stretch of time, never under 2).
+let stepTimes = [], frameGap = 33;
+const need = (n, ms) => Math.max(2, Math.min(n, Math.floor(ms / frameGap * 0.8)));
 function step(now) {
+  stepTimes.push(now); while (stepTimes.length > 2 && now - stepTimes[0] > 1000) stepTimes.shift();
+  if (stepTimes.length >= 3) { const gaps = stepTimes.slice(1).map((t, i) => t - stepTimes[i]).sort((a, b) => a - b); frameGap = gaps[gaps.length >> 1]; }
   rawPeople = pose.detectForVideo(src, now).landmarks || [];
   let people = rawPeople.filter(isRealBody);
   // Small or just lost: try the zoomed look (it sees a small player's feet much better).
@@ -1313,7 +1346,7 @@ function step(now) {
     // The ball's top over the last 3 s, for the knee rule.
     flight.push({ top: found.y - found.d / 2, t: now });
     while (flight.length && now - flight[0].t > 3000) flight.shift();
-  } else if (now - lastSeen > 300) {
+  } else if (now - lastSeen > Math.max(300, frameGap * 2.5)) {
     trail = []; heights = [];
   }
   detHistory.push(found ? 1 : 0); if (detHistory.length > 60) detHistory.shift();
