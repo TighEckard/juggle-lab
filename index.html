@@ -364,8 +364,8 @@ function findCandidates(people, now) {
   frameIndex += 1;
   searchBox = zoomRegion(people, now);
   let cands = searchBox ? detectIn(searchBox) : [];
-  // Whole frame every 4th frame, or whenever the zoomed look finds nothing.
-  if (!searchBox || frameIndex % 4 === 0 || !cands.some((c) => c.score >= S.minScore)) cands = cands.concat(detectIn(null));
+  // Whole frame every FULL_EVERY-th frame, or whenever the zoomed look finds nothing.
+  if (!searchBox || frameIndex % FULL_EVERY === 0 || !cands.some((c) => c.score >= S.minScore)) cands = cands.concat(detectIn(null));
   return cands;
 }
 
@@ -717,7 +717,7 @@ function judge(now, people) {
   // Held for 0.7 s, three frames running (a ball flying past a hand can look
   // held for a frame or two): the run ends.
   heldStreak = heldFor(700) ? heldStreak + 1 : 0;
-  if (phase === "live" && heldStreak >= need(3, 150)) { end("Hand!", { x: ball.x, y: ball.y }); return; }
+  if (phase === "live" && heldStreak >= 3) { end("Hand!", { x: ball.x, y: ball.y }); return; }
 
   // Touch: the ball fell, bottomed out, and is going back up, and its lowest
   // point was within reach of a foot (or knee/head). Hovering near a foot
@@ -1314,20 +1314,29 @@ function zoomedPose(now) {
 // How far apart frames come. Phones often run the tracker at 5-10 frames a
 // second, not 30, so rules that wait for "N frames" use need(), which asks for
 // fewer frames when they come slowly (the same stretch of time, never under 2).
-let stepTimes = [], frameGap = 33;
+let stepTimes = [], frameGap = 33, stepCount = 0;
+const POSE_EVERY = +(params.get("poseevery") || 2), FULL_EVERY = +(params.get("fullevery") || 8);
 const need = (n, ms) => Math.max(2, Math.min(n, Math.floor(ms / frameGap * 0.8)));
 function step(now) {
   stepTimes.push(now); while (stepTimes.length > 2 && now - stepTimes[0] > 1000) stepTimes.shift();
   if (stepTimes.length >= 3) { const gaps = stepTimes.slice(1).map((t, i) => t - stepTimes[i]).sort((a, b) => a - b); frameGap = gaps[gaps.length >> 1]; }
-  rawPeople = pose.detectForVideo(src, now).landmarks || [];
-  let people = rawPeople.filter(isRealBody);
+  // Speed: when frames come slowly (under ~12 a second, a phone that can't keep
+  // up), the pose model runs every POSE_EVERY-th frame and the frames between
+  // reuse the last pose; the ball detector still runs every frame. The body
+  // moves much less than the ball, and the time saved buys more ball frames.
+  // (At full speed every frame gets a pose, and so does every frame in the
+  // trick and one-foot modes, which follow the feet closely.) &poseevery=1 turns it off.
+  stepCount += 1;
+  const skipPose = POSE_EVERY > 1 && mode === "classic" && frameGap >= 80 && stepCount % POSE_EVERY !== 0 && lastPeople.people.length > 0 && now - lastPeople.t < 300;
+  if (!skipPose) rawPeople = pose.detectForVideo(src, now).landmarks || [];
+  let people = skipPose ? [] : rawPeople.filter(isRealBody);
   // Small or just lost: try the zoomed look (it sees a small player's feet much better).
-  const z = zoomedPose(now);
+  const z = skipPose ? null : zoomedPose(now);
   if (z && (!people.length || people.every((p) => Math.hypot(p[23].x - z[23].x, p[23].y - z[23].y) < 0.05))) people = [z, ...people.slice(1)];
   else if (z && !people.length) people = [z];
   poseFresh = people.length > 0;
   if (poseFresh) lastPeople = { t: now, people };
-  else if (now - lastPeople.t < 200) people = lastPeople.people;
+  else if (now - lastPeople.t < Math.max(200, frameGap * POSE_EVERY + 20)) people = lastPeople.people;
   sortPlayers(people, now);
   const cands = withoutSpareBalls(findCandidates(people, now), people, now);
   const found = pickBall(cands, now);
