@@ -811,7 +811,17 @@ function judge(now, people) {
       if (oneFoot) {
         // The other foot ends a run (before one, it just doesn't start it);
         // thighs and the head don't count.
-        if (foot && foot !== oneFoot.foot) {
+        // Ending a run is final, so "wrong foot" needs two signs that agree: the
+        // ball clearly on that side of the hips (0.6 units, not just 0.35), and
+        // the pose model's nearest foot is that one too. On the test clips the
+        // two disagree on about 1 touch in 7; then the touch is treated as
+        // unsure (counted during a run, below) instead of ending it.
+        const nearest = /Foot$/.test(named[0]?.part ?? "") ? named[0].part.replace("Foot", "") : null;
+        const sureWrong = foot && foot !== oneFoot.foot && Math.abs(off) >= 0.6 && nearest === foot;
+        if (foot && foot !== oneFoot.foot && !sureWrong) {
+          log.push({ ...at, skip: "unsureFoot" });
+          if (phase !== "live") return;   // never starts a run
+        } else if (sureWrong) {
           log.push({ ...at, wrong: true });
           if (phase === "live") end("Wrong Foot!", { x: turn.x, y: turn.y });
           return;
