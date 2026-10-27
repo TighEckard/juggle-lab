@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Join my team on Footy</title>
+<meta property="og:title" content="Join my team on Footy">
+<meta property="og:description" content="Train ball skills together and see who's on top.">
+<meta name="apple-itunes-app" content="app-id=6820357514">
+<style>
+  :root { --bg: #f2f2f7; --card: #fff; --text: #1c1c1e; --muted: #6e6e73; --accent: #34c759; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #000; --card: #1c1c1e; --text: #f5f5f7; --muted: #a1a1a6; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--text);
+    font: 17px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; padding: 16px; }
+  main { width: 100%; max-width: 380px; background: var(--card); border-radius: 24px; padding: 32px 24px; text-align: center; }
+  .ball { font-size: 48px; }
+  h1 { font-size: 26px; margin: 8px 0 4px; }
+  .muted { color: var(--muted); margin: 0; }
+  .code { font: 800 34px/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: 4px; margin: 24px 0; }
+  a.button { display: block; padding: 15px; border-radius: 999px; font-weight: 600; text-decoration: none; margin-top: 12px; }
+  .primary { background: var(--accent); color: #000; }
+  .secondary { background: transparent; color: var(--text); border: 1px solid var(--muted); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div class="ball" aria-hidden="true">⚽️</div>
+  <h1 id="title">Join my team on Footy</h1>
+  <p class="muted" id="sub">Team code</p>
+  <div class="code" id="code">------</div>
+  <div id="ios">
+    <a class="button primary" id="open" href="#">Open in Footy</a>
+    <a class="button secondary" href="https://apps.apple.com/app/id6820357514">Get Footy</a>
+  </div>
+  <p class="muted" id="android" hidden>Footy for Android is coming soon. Save this code to join when it's out.</p>
+</main>
+<script>
+  const params = new URLSearchParams(location.search);
+  const code = (params.get("code") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+  const team = (params.get("team") || "").slice(0, 40);
+  if (code) document.getElementById("code").textContent = code;
+  if (team) document.getElementById("title").textContent = "Join " + team + " on Footy";
+  document.getElementById("open").href = "footyapp://join?code=" + encodeURIComponent(code);
+  if (/android/i.test(navigator.userAgent)) {
+    document.getElementById("ios").hidden = true;
+    document.getElementById("android").hidden = false;
+  }
+</script>
+</body>
+</html>
