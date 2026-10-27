@@ -209,6 +209,7 @@ for (const key of ["handsFoul", "upperBody", "aboveKnees", "showAll"]) {
 { const q = new URLSearchParams(location.search);
   if (q.get("det") === "lite2") S.detector = "efficientdet_lite2";
   if (q.get("det") === "lite0") S.detector = "efficientdet_lite0";
+  if (q.get("det") === "footy") S.detector = "footy_ball";
   if (q.has("min")) S.minScore = +q.get("min"); }
 $("detector").value = S.detector;
 $("detector").addEventListener("change", async () => { S.detector = $("detector").value; save(); await loadDetector(); });
@@ -219,8 +220,9 @@ async function loadDetector() {
   detector?.close?.();
   const opts = (delegate) => ({
     baseOptions: { modelAssetPath:
-      `https://storage.googleapis.com/mediapipe-models/object_detector/${S.detector}/float16/1/${S.detector}.tflite`, delegate },
-    runningMode: "VIDEO", scoreThreshold: 0.02, maxResults: 5, categoryAllowlist: ["sports ball"] });
+      S.detector === "footy_ball" ? "./models/footy_ball.tflite"
+        : `https://storage.googleapis.com/mediapipe-models/object_detector/${S.detector}/float16/1/${S.detector}.tflite`, delegate },
+    runningMode: "VIDEO", scoreThreshold: 0.02, maxResults: 5, categoryAllowlist: [S.detector === "footy_ball" ? "ball" : "sports ball"] });
   try { detector = await ObjectDetector.createFromOptions(vision, opts("GPU")); }
   catch { detector = await ObjectDetector.createFromOptions(vision, opts("CPU")); }
 }
@@ -408,7 +410,11 @@ function pickBall(cands, now) {
       if (fits.length) return fits.sort((p1, p2) => Math.hypot(p1.x - px, p1.y - py) - Math.hypot(p2.x - px, p2.y - py))[0];
     }
   }
-  const sure = cands.filter((c) => c.score >= S.minScore);
+  // Lost for a moment (a blurred ball the detector misses): a new pick still has
+  // to be about the ball's size, so a small bright spot or a shoe doesn't take
+  // over the track (and turn into fake touches) before the ball is found again.
+  const sizeOk = (c) => !ball || now - lastSeen > 1500 || (c.d > ball.d * 0.5 && c.d < ball.d * 2);
+  const sure = cands.filter((c) => c.score >= S.minScore && sizeOk(c));
   return sure.length ? sure.sort((a, b) => b.score - a.score)[0] : null;
 }
 
