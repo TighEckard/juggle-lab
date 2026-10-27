@@ -54,6 +54,10 @@
   if (/android/i.test(navigator.userAgent)) {
     document.getElementById("ios").hidden = true;
     document.getElementById("android").hidden = false;
+  } else {
+    // People with Footy installed never see this page (the link opens the app);
+    // everyone else goes straight to the App Store.
+    location.replace("https://apps.apple.com/app/id6820357514");
   }
 </script>
 </body>
