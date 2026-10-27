@@ -580,7 +580,7 @@ function learnFloor(now) {
 // off the floor next to feet that stand still, or with no foot near at all.
 // Returns why it's a bounce ("floor" | "nofoot"), or null for a possible touch.
 // Down on the floor: during a run the ball stayed low (within 0.6 of a ball
-// of the floor) and nearly level for 0.25 s: it rolled, was dribbled, or
+// of the floor) and nearly level for 0.4 s: it rolled, was dribbled, or
 // bounced where the bounce itself wasn't seen. A juggled ball only passes
 // through down there.
 let lowLog = [], floorPending = null, touchTimes = [];
@@ -588,9 +588,9 @@ const touchSince = (t) => touchTimes.some((x) => x >= t - 100);
 function downOnFloor(now) {
   if (groundY == null) return false;
   if (ball && lastSeen === now) lowLog.push({ t: now, y: ball.y, low: ball.y + ball.d / 2 > groundY + (floorOff - 0.6) * unit() });
-  while (lowLog.length && now - lowLog[0].t > Math.max(300, frameGap * 2.5)) lowLog.shift();
+  while (lowLog.length && now - lowLog[0].t > Math.max(450, frameGap * 2.5)) lowLog.shift();
   const ys = lowLog.map((q) => q.y);
-  return ball && lastSeen === now && lowLog.length >= need(5, 250) && now - lowLog[0].t >= 250 && lowLog.every((q) => q.low)
+  return ball && lastSeen === now && lowLog.length >= need(6, 400) && now - lowLog[0].t >= 400 && lowLog.every((q) => q.low)
     && Math.max(...ys) - Math.min(...ys) < ball.d * 0.5;
 }
 function bounced(turn) {
@@ -740,7 +740,13 @@ function judge(now, people) {
     if (b) {
       lastTouch = turn.t;
       log.push({ t: +(turn.t / 1000).toFixed(2), bounce: b, at: [Math.round(turn.x), Math.round(turn.y), Math.round(ball.d)] });
-      if (phase === "live") end("Ground!", { x: turn.x, y: turn.y + ball.d / 2 });
+      // Forgiving: only a ball clearly down on the floor after a real fall ends
+      // the run right away. Anything less sure (a glimpse, a box off the ball, a
+      // low touch the pose model missed) waits: a touch soon after keeps the run.
+      const bottom = turn.y + ball.d / 2, u = unit();
+      const sureDown = b !== "away" && turn.fell >= 1.5 && bottom > groundY + Math.max(0.3, floorOff - 0.2) * u;
+      if (phase === "live" && sureDown) end("Ground!", { x: turn.x, y: bottom });
+      else if (phase === "live") floorPending = { t: turn.t, x: turn.x, y: turn.y, bottom };
       return;
     }
   }
@@ -766,7 +772,7 @@ function judge(now, people) {
   }
   if (floorPending && phase === "live") {
     if (touchSince(floorPending.t) || now - floorPending.t > 1500) floorPending = null;
-    else if (now - floorPending.t >= 500) { const w = floorPending; floorPending = null; end("Ground!", { x: w.x, y: w.bottom }); return; }
+    else if (now - floorPending.t >= 600) { const w = floorPending; floorPending = null; end("Ground!", { x: w.x, y: w.bottom }); return; }
   }
   if (turn && p && turn.t - lastTouch > S.cooldown && (!onFloor || turn.rose >= 1) && !bobbing) {
     // In or near a hand lately: carried, not juggled.
@@ -792,7 +798,7 @@ function judge(now, people) {
     const knees = KNEE.map((i) => kp ? (kp[i] && kp[i].visibility > 0.4 ? { x: kp[i].x * W, y: kp[i].y * H } : null) : pt(i)).filter(Boolean);
     const kneeY = knees.length ? knees.reduce((s, k) => s + k.y, 0) / knees.length : null;
     const highest = Math.min(Infinity, ...flight.filter((f) => f.t > previousTouch && f.t < turn.t).map((f) => f.top));
-    if (S.aboveKnees && kneeY != null && !(highest < kneeY)) { rej("belowKnees"); if (downFall()) { end("Ground!", { x: turn.x, y: turn.y + ball.d / 2 }); } return; }
+    if (S.aboveKnees && kneeY != null && !(highest < kneeY)) { rej("belowKnees"); if (downFall() && !floorPending) floorPending = { t: turn.t, x: turn.x, y: turn.y, bottom: turn.y + ball.d / 2 }; return; }
     // The ball only turns back up in the air if something hit it, so a turn
     // below the hips and within the legs' reach counts even if the foot dots
     // are a little off.
@@ -863,8 +869,8 @@ function judge(now, people) {
     rej("noContact");
   }
 
-  // Ground: the ball stays at the ground line, rolling or resting, for a
-  // quarter second. (A low touch also dips to the ground line, but it's
+  // Ground: the ball stays at the ground line, rolling or resting, for
+  // 0.6 s. (A low touch also dips to the ground line, but it's
   // moving fast and leaves right away.)
   if (phase === "live" && groundY != null) {
     const bottom = ball.y + ball.d / 2;
@@ -880,7 +886,7 @@ function judge(now, people) {
     const settled = seen && atGround && Math.abs(vy) < ball.d * 2;
     if (!settled) groundSince = null;
     else if (groundSince == null) groundSince = now;
-    if (groundSince != null && now - groundSince > 400 && now - lastTouch > 400) end("Ground!", { x: ball.x, y: bottom });
+    if (groundSince != null && now - groundSince > 600 && now - lastTouch > 400) end("Ground!", { x: ball.x, y: bottom });
   }
 }
 
@@ -929,10 +935,32 @@ function checkFacing(now, p) {
     toApp({ type: "facing", ok: !away });
   }
 }
+// How well the ball can be seen, so a player knows when it's the setup (dim
+// light, a dark ball against dark clothes) and not their juggling: over the
+// last 3 s with a player in view, the share of frames the ball was found and
+// how sure the detector was. Poor below 55% seen or a median score under 0.3;
+// clear again above 75% and 0.4 (no flicker). The app gets {type: "vision", ok}.
+let visLog = [], visionOk = null;
+function checkVision(now, people, found) {
+  if (!people.length) return;
+  visLog.push({ t: now, seen: !!found, score: found ? found.score : 0 });
+  while (visLog.length && now - visLog[0].t > 3000) visLog.shift();
+  const seen = visLog.filter((v) => v.seen);
+  if (visLog.length < need(10, 2000) || now - visLog[0].t < 2000 || !seen.length) return;
+  const share = seen.length / visLog.length, scores = seen.map((v) => v.score).sort((a, b) => a - b), med = scores[scores.length >> 1];
+  const ok = visionOk === false ? share > 0.75 && med >= 0.4 : !(share < 0.55 || med < 0.3);
+  if (ok === visionOk) return;
+  const was = visionOk;
+  visionOk = ok;
+  log.push({ t: +(now / 1000).toFixed(2), vision: ok ? "clear" : "poor", share: +share.toFixed(2), score: +med.toFixed(2) });
+  toApp({ type: "vision", ok, seen: +share.toFixed(2) });
+  if (ok && phase !== "ended") flashHint(was === false ? "Ball is clear again" : "Ball is clear");
+}
 function updateHint(now) {
   if (performance.now() < hintUntil) return;
   let text = "";
   if (turnedAway && phase !== "ended") text = "Face the camera";
+  else if (visionOk === false && phase !== "ended" && ball && now - lastSeen <= 1200) text = "Hard to see the ball. More light or a ball that stands out helps";
   else if (phase !== "ended" && (!ball || now - lastSeen > 1200)) text = "Looking for the ball…";
   else if (phase === "ready" && !appMode) text = oneFoot ? `Kick it up with your ${oneFoot.foot} foot` : "Kick the ball up to start";
   if ($("hint").textContent !== text) $("hint").textContent = text;
@@ -1375,6 +1403,7 @@ function step(now) {
     trail = []; heights = [];
   }
   detHistory.push(found ? 1 : 0); if (detHistory.length > 60) detHistory.shift();
+  checkVision(now, people, found);
   sortPlayers(people, now);
   judge(now, people);
   if (atwMode) judgeAtw(now, people, found);
