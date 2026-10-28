@@ -583,7 +583,7 @@ function learnFloor(now) {
 // of the floor) and nearly level for 0.4 s: it rolled, was dribbled, or
 // bounced where the bounce itself wasn't seen. A juggled ball only passes
 // through down there.
-let lowLog = [], floorPending = null, touchTimes = [];
+let lowLog = [], floorPending = null, touchTimes = [], wrongStreak = 0;
 const touchSince = (t) => touchTimes.some((x) => x >= t - 100);
 function downOnFloor(now) {
   if (groundY == null) return false;
@@ -821,7 +821,8 @@ function judge(now, people) {
       const part = upper ? named[0].part : side ? side + "Foot" : (named[0]?.part ?? "rightFoot").replace("Thigh", "Foot").replace("head", "rightFoot");
       const at = { t: +(turn.t / 1000).toFixed(2), part, off, at: [Math.round(turn.x), Math.round(turn.y), Math.round(ball.d)] };
       if (oneFoot) {
-        // The other foot ends a run (before one, it just doesn't start it);
+        // The other foot doesn't count, and twice in a row ends a run (before
+        // one, it just doesn't start it);
         // thighs and the head don't count.
         // Ending a run is final, so "wrong foot" needs two signs that agree: the
         // ball clearly on that side of the hips (0.6 units, not just 0.35), and
@@ -834,14 +835,18 @@ function judge(now, people) {
           log.push({ ...at, skip: "unsureFoot" });
           if (phase !== "live") return;   // never starts a run
         } else if (sureWrong) {
+          // Forgiving: one clear other-foot touch doesn't count and gets a
+          // reminder; a second one in a row (no counted touch between) ends it.
           log.push({ ...at, wrong: true });
-          if (phase === "live") end("Wrong Foot!", { x: turn.x, y: turn.y });
+          if (phase === "live" && wrongStreak >= 1) end("Wrong Foot!", { x: turn.x, y: turn.y });
+          else if (phase === "live") { wrongStreak = 1; flashHint(`Only your ${oneFoot.foot} foot counts`); }
           return;
         }
         if (upper) { log.push({ ...at, skip: "upper" }); if (phase === "live") flashHint(`Only your ${oneFoot.foot} foot counts`); return; }
         // Ball too near the middle to tell which foot: it counts during a run
-        // (benefit of the doubt), but can't start one.
-        if (!foot && phase !== "live") { log.push({ ...at, skip: "unsure" }); return; }
+        // (benefit of the doubt), and starts one when the pose model's nearest
+        // foot is the right one.
+        if (!foot && phase !== "live" && nearest !== oneFoot.foot) { log.push({ ...at, skip: "unsure" }); return; }
       }
       // A run starts only with the player clearly in view (whole legs seen in
       // most of the last half second), not from a ball rolled down an arm by
@@ -854,7 +859,7 @@ function judge(now, people) {
         if (recent.length < need(4, 600) || recent.filter((q) => q.seen).length < recent.length * 0.7) { log.push({ ...at, skip: "notInView" }); return; }
         phase = "live"; count = 0; atwCount = 0; toApp({ type: "start", mode });
       }
-      count += 1; totalTouches += 1; stats.touches++;
+      count += 1; totalTouches += 1; stats.touches++; wrongStreak = 0;
       touchTimes.push(turn.t); if (touchTimes.length > 20) touchTimes.shift();
       if (atwMode) atwTouches.push(turn.t);
       toApp({ type: "touch", count, part, time: turn.t / 1000,
@@ -892,7 +897,7 @@ function judge(now, people) {
 
 function end(reason, where) {
   if (atwMode) flushAtw();
-  phase = "ended"; ends += 1; groundSince = null; floorPending = null;
+  phase = "ended"; ends += 1; groundSince = null; floorPending = null; wrongStreak = 0;
   stats.ends[reason] = (stats.ends[reason] || 0) + 1;
   log.push({ t: +(lastSeen / 1000).toFixed(2), end: reason, count });
   showEnd(reason, atwMode ? atwCount : count, where);
