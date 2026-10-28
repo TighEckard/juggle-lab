@@ -757,8 +757,11 @@ function judge(now, people) {
   holdingNow = heldFor(400);
   // Held for 0.7 s, three frames running (a ball flying past a hand can look
   // held for a frame or two): the run ends.
+  // A ball still being kicked isn't held: a juggle low between hanging hands
+  // looks held to the hand test, so the run only ends 0.7 s after the last
+  // counted touch (a real catch keeps holding and still ends it then).
   heldStreak = heldFor(700) ? heldStreak + 1 : 0;
-  if (phase === "live" && heldStreak >= 3) { end("Hand!", { x: ball.x, y: ball.y }); return; }
+  if (phase === "live" && heldStreak >= 3 && !touchTimes.some((t) => t > now - 700)) { end("Hand!", { x: ball.x, y: ball.y }); return; }
 
   // Touch: the ball fell, bottomed out, and is going back up, and its lowest
   // point was within reach of a foot (or knee/head). Hovering near a foot
