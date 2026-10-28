@@ -511,14 +511,14 @@ function findKick(now, minRise) {
   if (b.t - a.t > frameGap * 2.5 || c.t - b.t > frameGap * 2.5) return null;
   const v1 = (b.y - a.y) / d / ((b.t - a.t) / 1000), v2 = (c.y - b.y) / d / ((c.t - b.t) / 1000);   // + = down
   const dt = (c.t - a.t) / 2000;
-  if (v1 - v2 + GRAVITY * dt < 12 || v2 > -2) return null;   // no upward kick, or not going up after it
+  if (v1 - v2 + GRAVITY * dt < 8 || v2 > -0.5) return null;   // no upward kick, or not going up after it
   // Speeds at the middle frame (gravity added back for the half frame either side).
   const down = Math.max(0, v1 + GRAVITY * (b.t - a.t) / 2000), up = Math.max(0, -v2 + GRAVITY * (c.t - b.t) / 2000);
   const fell = Math.max(b.y - a.y, 0) / d + down ** 2 / (2 * GRAVITY);
   const rose = Math.max(b.y - c.y, 0) / d + up ** 2 / (2 * GRAVITY);
   // The kick itself shows something hit the ball, so the rise needed to start a
   // run (there to skip a ball bobbling at the feet) is relaxed to half a ball.
-  return rose >= Math.min(minRise, 0.5) ? { ...b, rose, fell, kink: true } : null;
+  return rose >= Math.min(minRise, 0.35) ? { ...b, rose, fell, kink: true } : null;
 }
 
 
