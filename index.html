@@ -420,7 +420,7 @@ function pickBall(cands, now) {
   // Lost for a moment (a blurred ball the detector misses): a new pick still has
   // to be about the ball's size, so a small bright spot or a shoe doesn't take
   // over the track (and turn into fake touches) before the ball is found again.
-  const sizeOk = (c) => !ball || now - lastSeen > 1500 || (c.d > ball.d * 0.5 && c.d < ball.d * 2);
+  const sizeOk = (c) => !ball || now - lastSeen > 1500 || (c.d > ball.d * 0.35 && c.d < ball.d * 3);
   const sure = cands.filter((c) => c.score >= S.minScore && sizeOk(c));
   return sure.length ? sure.sort((a, b) => b.score - a.score)[0] : null;
 }
@@ -686,7 +686,7 @@ function bounced(turn) {
 // Held over the last `ms` before `at`: a hand on the ball most of the time,
 // or the ball near the hands and going wherever they go (measured over the
 // whole stretch, so the ball's box jiggling behind the fingers doesn't hide it).
-function heldForAt(ms, at) {
+function heldForAt(ms, at, strict = false) {
   const r = inHand.filter((h) => at - h.t < ms && h.t <= at);
   // Enough of the stretch seen to judge (a ball lost behind fingers for a few
   // frames doesn't let a short sample decide).
@@ -703,7 +703,8 @@ function heldForAt(ms, at) {
     && (ballSpan < ball.d * 0.3 || span(near.map(mid)) >= ballSpan * 0.5)) return true;
   // Or the ball near the hands and going wherever they go (measured over the
   // whole stretch, so the ball's box jiggling behind the fingers doesn't hide it).
-  if (near.length < r.length * 0.8) return false;
+  // (Not enough to end a run: a low juggle between hanging hands looks like it.)
+  if (strict || near.length < r.length * 0.8) return false;
   const relSpan = span(near.map((h) => { const m = mid(h); return { x: h.bx - m.x, y: h.by - m.y }; }));
   return relSpan < ballSpan * 0.5 || ballSpan < ball.d * 0.3;
 }
@@ -769,7 +770,7 @@ function judge(now, people) {
   // counted touch (a real catch keeps holding and still ends it then).
   // Ending a run is final, so Hand! is only for clear holding or carrying:
   // held for 1.2 s, with no counted touch in the last 0.7 s.
-  heldStreak = heldFor(1200) ? heldStreak + 1 : 0;
+  heldStreak = heldForAt(1200, now, true) ? heldStreak + 1 : 0;
   if (phase === "live" && heldStreak >= 3 && !touchTimes.some((t) => t > now - 700)) { end("Hand!", { x: ball.x, y: ball.y }); return; }
 
   // Touch: the ball fell, bottomed out, and is going back up, and its lowest
