@@ -541,6 +541,33 @@ function touchSide(turn) {
   return { off: +off.toFixed(2), side: Math.abs(off) < SIDE_MIN ? null : off > 0 ? "left" : "right" };
 }
 
+// Which foot kicked: the other one is the standing foot, which stays where it
+// was. Feet are matched by where they were a quarter to half a second before the
+// touch, not by the pose model's left/right names at the touch, because those
+// often swap when the legs cross (a right foot crossing over to the left side).
+// Returns "left" | "right" | null (can't tell).
+function kickingFoot(turn) {
+  const W = FW(), H = FH(), u = unit();
+  const ank = (p) => [27, 28].map((i) => p[i] && p[i].visibility > 0.4 ? { x: p[i].x * W, y: p[i].y * H } : null);
+  const before = poses.filter((q) => q.t >= turn.t - 550 && q.t <= turn.t - 200).map((q) => ank(q.p)).find(([l, r]) => l && r);
+  const atPose = poses.length ? poses.reduce((a, q) => Math.abs(q.t - turn.t) < Math.abs(a.t - turn.t) ? q : a) : null;
+  if (!before || !atPose || Math.abs(atPose.t - turn.t) > 120) return null;
+  const now = ank(atPose.p).filter(Boolean);
+  if (now.length < 2) return null;
+  const [L0, R0] = before, d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) / u;
+  if (d(L0, R0) < 0.5) return null;   // feet together then: can't tell them apart
+  // The standing foot: the one at the touch nearest to where a foot was; the
+  // other one must have moved clearly more.
+  let best = null;
+  for (const [i, a] of now.entries()) for (const [side, b] of [["left", L0], ["right", R0]]) {
+    const other = now[1 - i], otherFrom = side === "left" ? R0 : L0;
+    const still = d(a, b), moved = d(other, otherFrom);
+    if (!best || still - moved < best.score) best = { score: still - moved, still, moved, standing: side };
+  }
+  if (!best || best.still > 0.5 || best.moved < best.still + 0.5) return null;
+  return best.standing === "left" ? "right" : "left";
+}
+
 // The floor where the ball is. The ground line comes from the feet, but the
 // ball is usually a little nearer the camera, so on the floor it sits lower in
 // the picture. Learned from the ball itself whenever it rests or rolls on the
@@ -829,9 +856,14 @@ function judge(now, people) {
         // the pose model's nearest foot is that one too. On the test clips the
         // two disagree on about 1 touch in 7; then the touch is treated as
         // unsure (counted during a run, below) instead of ending it.
+        // A crossed-over touch (the right foot on the left side) is judged by
+        // the kicking foot: when that is the right one, it counts.
         const nearest = /Foot$/.test(named[0]?.part ?? "") ? named[0].part.replace("Foot", "") : null;
-        const sureWrong = foot && foot !== oneFoot.foot && Math.abs(off) >= 0.6 && nearest === foot;
-        if (foot && foot !== oneFoot.foot && !sureWrong) {
+        const kick = kickingFoot(turn), wrongFoot = oneFoot.foot === "right" ? "left" : "right";
+        Object.assign(at, { kick, nearest });
+        const sureWrong = kick ? kick === wrongFoot && (foot === wrongFoot || nearest === wrongFoot)
+          : foot && foot !== oneFoot.foot && Math.abs(off) >= 0.6 && nearest === foot;
+        if (foot && foot !== oneFoot.foot && !sureWrong && kick !== oneFoot.foot) {
           log.push({ ...at, skip: "unsureFoot" });
           if (phase !== "live") return;   // never starts a run
         } else if (sureWrong) {
@@ -846,7 +878,7 @@ function judge(now, people) {
         // Ball too near the middle to tell which foot: it counts during a run
         // (benefit of the doubt), and starts one when the pose model's nearest
         // foot is the right one.
-        if (!foot && phase !== "live" && nearest !== oneFoot.foot) { log.push({ ...at, skip: "unsure" }); return; }
+        if (!foot && phase !== "live" && nearest !== oneFoot.foot && kick !== oneFoot.foot) { log.push({ ...at, skip: "unsure" }); return; }
       }
       // A run starts only with the player clearly in view (whole legs seen in
       // most of the last half second), not from a ball rolled down an arm by
