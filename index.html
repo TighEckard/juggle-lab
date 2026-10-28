@@ -736,9 +736,17 @@ function judge(now, people) {
   // hand stays put.)
   // Each hand (wrist, pinky and index knuckles) followed on its own: holding
   // the ball in two hands, the nearer one flips from frame to frame.
-  const handAt = (ids) => { const q = ids.map(pt).filter(Boolean); return q.length ? { x: q.reduce((s, v) => s + v.x, 0) / q.length, y: q.reduce((s, v) => s + v.y, 0) / q.length } : null; };
+  // A hand in a pocket (at its hip, or hidden so the pose model only guesses
+  // it) isn't holding anything: a ball juggled past the hip next to it used to
+  // end runs with Hand!.
+  const handAt = (ids, hip) => {
+    const q = ids.map((i) => p[i] && p[i].visibility > 0.6 ? { x: p[i].x * W, y: p[i].y * H } : null).filter(Boolean);
+    if (!q.length) return null;
+    const h = { x: q.reduce((s, v) => s + v.x, 0) / q.length, y: q.reduce((s, v) => s + v.y, 0) / q.length }, hp = pt(hip);
+    return hp && Math.hypot(h.x - hp.x, h.y - hp.y) < unit() * 0.6 ? null : h;
+  };
   const seenNow = now - lastSeen < 60, reachHand = unit() * 1.5;
-  const both = [handAt([15, 17, 19]), handAt([16, 18, 20])];
+  const both = p ? [handAt([15, 17, 19], 23), handAt([16, 18, 20], 24)] : [null, null];
   const sides = both.map((h) => h && seenNow && Math.hypot(h.x - ball.x, h.y - ball.y) < reachHand ? h : null);
   // On the ball: a hand right at it (closer than its edge plus a bit).
   const gaps = both.map((h) => h && seenNow ? Math.hypot(h.x - ball.x, h.y - ball.y) / unit() : 9);
