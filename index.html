@@ -394,7 +394,14 @@ function pickBall(cands, now) {
     // real ball beats a faint white sock or cone next to it, and a second ball
     // a few sizes away doesn't steal the track.
     const cost = (c) => Math.hypot(c.x - ball.x, c.y - ball.y) / ball.d - 2 * c.score;
-    if (near.length) return near.sort((a, b) => cost(a) - cost(b))[0];
+    // (Unless the one nearby is only a faint guess and a clearly surer ball of
+    // the same size shows up elsewhere: the track had slipped onto a hand, a
+    // shoe or a logo while the real ball flew off.)
+    const bestNear = near.sort((a, b) => cost(a) - cost(b))[0];
+    const surer = bestNear && bestNear.score < 0.3 ? cands.filter((c) => c.score >= Math.max(S.minScore, bestNear.score + 0.3)
+      && c.d > ball.d * 0.6 && c.d < ball.d * 1.6).sort((a, b) => b.score - a.score)[0] : null;
+    if (surer) return surer;
+    if (bestNear) return bestNear;
     // Very faint (2-5%, e.g. a backlit ball against the sky): only right where
     // the ball's flight says it should be now, and the same size.
     const faint = +(new URLSearchParams(location.search).get("faint") || FAINT);
@@ -752,7 +759,7 @@ function judge(now, people) {
   const gaps = both.map((h) => h && seenNow ? Math.hypot(h.x - ball.x, h.y - ball.y) / unit() : 9);
   const onBall = Math.min(...gaps) < 0.85;
   inHand.push({ t: now, near: !!(sides[0] || sides[1]), on: onBall, gap: Math.min(...gaps), bx: ball.x, by: ball.y, sides });
-  while (inHand.length && now - inHand[0].t > 1200) inHand.shift();
+  while (inHand.length && now - inHand[0].t > 1600) inHand.shift();
   const heldFor = (ms) => heldForAt(ms, now);
   holdingNow = heldFor(400);
   // Held for 0.7 s, three frames running (a ball flying past a hand can look
@@ -760,7 +767,9 @@ function judge(now, people) {
   // A ball still being kicked isn't held: a juggle low between hanging hands
   // looks held to the hand test, so the run only ends 0.7 s after the last
   // counted touch (a real catch keeps holding and still ends it then).
-  heldStreak = heldFor(700) ? heldStreak + 1 : 0;
+  // Ending a run is final, so Hand! is only for clear holding or carrying:
+  // held for 1.2 s, with no counted touch in the last 0.7 s.
+  heldStreak = heldFor(1200) ? heldStreak + 1 : 0;
   if (phase === "live" && heldStreak >= 3 && !touchTimes.some((t) => t > now - 700)) { end("Hand!", { x: ball.x, y: ball.y }); return; }
 
   // Touch: the ball fell, bottomed out, and is going back up, and its lowest
