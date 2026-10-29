@@ -698,8 +698,10 @@ function heldForAt(ms, at, strict = false) {
   // A hand on the ball nearly all the time, at a steady distance, and either
   // the ball resting in it or the hand going along with the ball (a ball flying
   // past a hanging hand changes distance fast and the hand stays put).
-  const gaps = r.map((h) => h.gap);
-  if (r.filter((h) => h.on).length >= r.length * 0.8 && Math.max(...gaps) - Math.min(...gaps) < 0.8
+  // (For the Hand! ending, a ball held between both hands counts as on them,
+  // and frames with no hand to measure don't count against steadiness.)
+  const gaps = r.map((h) => strict ? h.cgap : h.gap).filter((g) => !strict || g < 9);
+  if (r.filter((h) => h.on || (strict && h.clamp)).length >= r.length * 0.8 && Math.max(...gaps) - Math.min(...gaps) < 0.8
     && (ballSpan < ball.d * 0.3 || span(near.map(mid)) >= ballSpan * 0.5)) return true;
   // Or the ball near the hands and going wherever they go (measured over the
   // whole stretch, so the ball's box jiggling behind the fingers doesn't hide it).
@@ -759,7 +761,14 @@ function judge(now, people) {
   // On the ball: a hand right at it (closer than its edge plus a bit).
   const gaps = both.map((h) => h && seenNow ? Math.hypot(h.x - ball.x, h.y - ball.y) / unit() : 9);
   const onBall = Math.min(...gaps) < 0.85;
-  inHand.push({ t: now, near: !!(sides[0] || sides[1]), on: onBall, gap: Math.min(...gaps), bx: ball.x, by: ball.y, sides });
+  // Both hands at the ball, one on each side of it: held in two hands (also at
+  // the waist, where a hand otherwise counts as in a pocket). Only the Hand!
+  // ending uses it.
+  const gapOf = (h) => h && seenNow ? Math.hypot(h.x - ball.x, h.y - ball.y) / unit() : 9;
+  const raw = p ? [handAt([15, 17, 19]), handAt([16, 18, 20])] : [null, null];
+  const clamp = raw.every((h) => gapOf(h) < 1.1) && (raw[0].x - ball.x) * (raw[1].x - ball.x) < 0;
+  const cgap = clamp ? Math.min(...gaps, Math.max(...raw.map(gapOf))) : Math.min(...gaps);
+  inHand.push({ t: now, near: !!(sides[0] || sides[1]), on: onBall, clamp, cgap, gap: Math.min(...gaps), bx: ball.x, by: ball.y, sides });
   while (inHand.length && now - inHand[0].t > 1600) inHand.shift();
   const heldFor = (ms) => heldForAt(ms, now);
   holdingNow = heldFor(400);
@@ -792,7 +801,10 @@ function judge(now, people) {
       // the run right away. Anything less sure (a glimpse, a box off the ball, a
       // low touch the pose model missed) waits: a touch soon after keeps the run.
       const bottom = turn.y + ball.d / 2, u = unit();
-      const sureDown = b !== "away" && turn.fell >= 1.5 && bottom > groundY + Math.max(0.3, floorOff - 0.2) * u;
+      // A real fall onto the floor at the feet's depth, with the feet seen and
+      // none under the ball, is sure too (a bounce beside the feet).
+      const sureDown = b !== "away" && turn.fell >= 1.5 && (bottom > groundY + Math.max(0.3, floorOff - 0.2) * u
+        || (b === "nofoot" && bottom > groundY - 0.3 * u));
       if (phase === "live" && sureDown) end("Ground!", { x: turn.x, y: bottom });
       else if (phase === "live") floorPending = { t: turn.t, x: turn.x, y: turn.y, bottom };
       return;
