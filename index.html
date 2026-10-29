@@ -1059,7 +1059,8 @@ function hideEnd() { $("banner").className = ""; }
 // moving at least 0.3 ball sizes in the last 0.6 s, when a foot point (ankle,
 // heel or toe) lifted at least 55% of a leg is more than 0.3 ball sizes above
 // the ball's center and within 1.6 to either side. A new trick once the foot
-// has been off the top of the ball for 0.2 s.
+// has been off the top of the ball for 0.12 s (0.2 s at 10 fps or less), or
+// right after a touch (see judgeAtwFrame).
 // Blurred fast legs: the pose model often misplaces the foot, but the knee is
 // reliable. While the ball is hidden (its spot filled from its flight), a leg
 // also counts when its knee is 0.7 ball sizes above the ball and one of its
@@ -1070,10 +1071,11 @@ function hideEnd() { $("banner").className = ""; }
 // falls to the floor, maybe off a leg) never counts. A "trick" seen while the
 // ball was hidden right before a touch (within 0.15 s) was the kicking foot
 // covering the ball, not a trick.
-let atwCount = 0, atwTotal = 0, lastOver = -1e9, atwBuf = [], atwPending = [], atwTouches = [];
+let atwCount = 0, atwTotal = 0, lastOver = -1e9, lastStart = -1e9, lastLeg = null, atwBuf = [], atwPending = [], atwTouches = [];
 const ATW_KNEE = { left: 25, right: 26 }, ATW_CONFIRM = 1600;
 const ATWQ = new URLSearchParams(location.search);   // test switches: &atwearly=0, &atwgap=ms
-const ATW_EARLY = ATWQ.get("atwearly") !== "0", ATW_GAP = +(ATWQ.get("atwgap") || 200);
+const ATW_EARLY = ATWQ.get("atwearly") !== "0", ATW_GAP = +(ATWQ.get("atwgap") || 120);
+const ATW_SPLIT = ATWQ.get("atwsplit") !== "0";
 const ATW_EARLY_CONFIRM = +(ATWQ.get("atwearlyms") || 800);
 const ATW_LEGS = [["left", [27, 29, 31]], ["right", [28, 30, 32]]];
 const ATW_DELAY = 450;
@@ -1148,9 +1150,19 @@ function judgeAtwFrame(k) {
     || (!h.ball && (pt(ATW_KNEE[side])?.y ?? Infinity) < b.y - b.d * 0.7 && ids.map(pt).some((f) => lifted(f) && b.y - f.y > -b.d * 0.3)))
     .map(([side]) => side);
   if (!over.length) return;
-  if (now - lastOver > ATW_GAP) {
+  // Fast combos: the next trick often starts right after the touch that ends
+  // the last one, closer than ATW_GAP. Over frames that come back after a
+  // touch, with a frame or more of the foot off the ball in between, are a
+  // new trick. (Frames over the ball right after a touch are still the old
+  // trick: the ball turning under the circling foot.)
+  const step = k > 0 ? now - atwBuf[k - 1].t : 33;
+  // Or the other leg goes over right after the touch.
+  const touched = atwTouches.some((t) => t > lastStart && t < now - step * 0.9);
+  const split = ATW_SPLIT && touched && (now - lastOver > step * 1.5 || !over.includes(lastLeg));
+  if (now - lastOver > Math.max(ATW_GAP, Math.min(200, step * 2)) || split) {
     if (!h.live) atwPending = atwPending.filter((q) => !q.early);
     atwPending.push({ t: now, leg: over[0], x: b.x, y: b.y, hidden: !h.ball, last: now, early: !h.live });
+    lastStart = now; lastLeg = over[0];
   }
   else if (atwPending.length) atwPending.at(-1).last = now;
   lastOver = now;
